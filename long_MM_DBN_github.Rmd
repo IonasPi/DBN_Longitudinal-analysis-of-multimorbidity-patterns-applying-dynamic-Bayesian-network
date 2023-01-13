@@ -98,7 +98,7 @@ u4<- unique(dff$diff_in_years)
 plot(dff$diff_in_years)
 summary(dff$diff_in_years)
 table(dff$diff_in_years)  
-plot(table(dff$diff_in_years)) # I plot the distribution. It shows that mostly the diagnoses are done in the range 40-65 years old 
+plot(table(dff$diff_in_years)) # I plot the distribution. It shows that most of the diagnoses are done in the range 40-65 years old 
 
 df<- subset(dff, dff$diff_in_years >= 0   & dff$diff_in_years < 66) # I keep the registry if it was done before 66 years old to follow up the population 45-65 years old. 
 dff <- df
