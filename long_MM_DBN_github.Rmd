@@ -22,8 +22,8 @@ This R Markdown is divided in four sections:
 # References
 
 
-Sections #1 and #2 explain the steps to preprocess the data and build the time series that I did in this project.
-Using the cumulative incidence table that can be obtained from the associated pdf document, you can skip sections 1 and 2 and go directly to performing the dynamic Bayesian network analysis in section #3. 
+Sections #1 and #2 explain the steps to preprocess the data and build the time series analyzed in this project.
+The time series can be obtained from the associated pdf document of this project; With this table, you can skip sections 1 and 2, and go directly to perform the dynamic Bayesian network analysis in section #3.
 
 
 Loading the data
@@ -1313,31 +1313,12 @@ datosinc <- rbind.data.frame(dat0inc, dat1inc, dat2inc,dat3inc, dat4inc, dat5inc
 
 #Plot to show incidence per four-month period.
 plot(datosinc$`913`) # HTA. Similar pattern with acuter decrease
-plot(datosinc$`914`) # HF. Increase slowly with peak at the end
-plot(datosinc$`910`) # IHD. Increase slowly with peak at the end
-plot(datosinc$`402`) # DLP. No flat phase, ascend and descend. Peak around t30 (55 years old)
-plot(datosinc$`401`) # DM2. Ascend, peak around t30 and stable or slow-descend from then
-plot(datosinc$`403`) # Hypothiroidism. Increase until t30 and then stability with some decrease
-plot(datosinc$`404`) # Obesity. Increase slowly, possible peak around t40, flat phase at the end
-plot(datosinc$`1001`) # COPD. Increase slowly, possible peak around t40, flat phase at the end
-plot(datosinc$`1002`) # Asthma. Flat phase, and decrease slowly
-plot(datosinc$`1302`) # Arthrosis. Increase until t30 and then stability with some decrease
-plot(datosinc$`507`) # Anxiety. Small flat phase (t20-t30), ascend and descend. Peak around t20 (52 years old)
-plot(datosinc$`506`) # Depression. Increase until t40 and then stability with some decrease
-plot(datosinc$`505`) # Psychosis. No clear pattern. It seems that is very random and tends to decrease with time
-plot(datosinc$`1401`) # Renal failure. Increase slowly with peak at the end
-plot(datosinc$`500`) # Dementia. Increase slowly with peak at the end  
-plot(datosinc$`1202`) # Atopic dermatitis. Slowly ascend with high range of values
-plot(datosinc$`1201`) # Psoriasis. Slowly ascend with high range of values, peak around t30, and then flat phase
-plot(datosinc$`1305`) # Arthritis. Slowly ascend with high range of values
-plot(datosinc$`502`) # Alcohol dependence. Increase slowly with peak at the end 
-plot(datosinc$`503`) # Tobacco dependence. Fast increase, peak inc t20 (52 years old), slowly descend. 
-plot(datosinc$`504`) # Other substance abuse. No clear pattern. It seems that is very random and tends to increase with time 
-plot(datosinc$`1101`) # Chronic liver disease (not cirrhosis). Increase with a peak at the end. From t40 range of values increase 
-plot(datosinc$`101`) # HIV. Slow descend with high range of values. 
-plot(datosinc$`210`) # Breast cancer. Increase with peak at the end. High range inc close times.
-plot(datosinc$`203`) # Colon cancer. Increase with peak at the end 
-plot(datosinc$`206`) # Lung cancer. Flat phase until t45, and rapid ascend
+plot(datosinc$`914`) # HF. Slow ascent with peak at the end
+plot(datosinc$`910`) # IHD. Slow ascent with peak at the end
+plot(datosinc$`402`) # DLP. No flat phase, rise and fall. Peak around t30 (55 years)
+plot(datosinc$`401`) # DM2. Rise, peak around t30 and stable, or slow decline since
+plot(datosinc$`507`) # Anxiety. Small flat phase (t20-t30), rise and fall. Peak around t20 (52 years)
+plot(datosinc$`203`) # Colon cancer. Rise with peak at the end
 
 merged_data3<- datosinc
 
@@ -1350,41 +1331,12 @@ datosin <- rbind.data.frame(dat0in, dat1in, dat2in,dat3in, dat4in, dat5in,dat6in
 
 #Plot to show total # of incident cases per four-month period. 
 datosin$suma <- rowSums(datosin) 
-plot(datosin$suma)  # Total. Increase until t30 and then stability with some decrease
-# Most prevalent and relevant chronic conditions
-plot(datosin$`913`) # HTA. Similar pattern with acuter decrease
-plot(datosin$`914`) # HF. Increase slowly with peak at the end
-plot(datosin$`910`) # IHD. Increase slowly with peak at the end
-plot(datosin$`402`) # DLP. No flat phase, ascend and descend. Peak around t30 (55 years old)
-plot(datosin$`401`) # DM2. Ascend, peak around t30 and stable or slow-descend from then
-plot(datosin$`403`) # Hypothiroidism. Increase until t30 and then stability with some decrease
-plot(datosin$`404`) # Obesity. Increase slowly, possible peak around t40, flat phase at the end
-plot(datosin$`1001`) # COPD. Increase slowly, possible peak around t40, flat phase at the end
-plot(datosin$`1002`) # Asthma. Flat phase, and decrease slowly
-plot(datosin$`1302`) # Arthrosis. Increase until t30 and then stability with some decrease
-plot(datosin$`507`) # Anxiety. Small flat phase (t20-t30), ascend and descend. Peak around t20 (52 years old)
-plot(datosin$`506`) # Depression. Increase until t40 and then stability with some decrease
-plot(datosin$`505`) # Psychosis. No clear pattern. It seems that is very random and tends to decrease with time
-plot(datosin$`1401`) # Renal failure. Increase slowly with peak at the end
-plot(datosin$`500`) # Dementia. Increase slowly with peak at the end  
-plot(datosin$`1202`) # Atopic dermatitis. Slowly ascend with high range of values
-plot(datosin$`1201`) # Psoriasis. Slowly ascend with high range of values, peak around t30, and then flat phase
-plot(datosin$`1305`) # Arthritis. Slowly ascend with high range of values
-plot(datosin$`502`) # Alcohol dependence. Increase slowly with peak at the end 
-plot(datosin$`503`) # Tobacco dependence. Fast increase, peak in t20 (52 years old), slowly descend. 
-plot(datosin$`504`) # Other substance abuse. No clear pattern. It seems that is very random and tends to increase with time 
-plot(datosin$`1101`) # Chronic liver disease (not cirrhosis). Increase with a peak at the end. From t40 range of values increase 
-plot(datosin$`101`) # HIV. Slow descend with high range of values. 
-plot(datosin$`210`) # Breast cancer. Increase with peak at the end. High range in close times.
-plot(datosin$`203`) # Colon cancer. Increase with peak at the end 
-plot(datosin$`206`) # Lung cancer. Flat phase until t45, and rapid ascend 
-
-
+plot(datosin$suma)  # Total. Rise to t30 then stability with some decline
 ```
 
 
 
-Column names are translated to chronic conditions in English 
+I translate column names to chronic conditions in English 
 
 #Incidence
 ```{r setup, include=FALSE}
@@ -1482,7 +1434,7 @@ rm(dat_cont,dat_cont_men,dat_cont_men2,dat_cont_wom,dat_cont_wom2,dat_cont2, dat
 
 # 3. Dynamic Bayesian network analysis 
 
-Once I have the cumulative incidence dataframe (merged_data3 in this script), it is possible to start the DBN analysis. 
+Once I have the cumulative incidence dataframe (merged_data3 in this script) I start the DBN analysis. If you already have the times series you can start at this point. 
 
 
 I install the library "dbnR" and its dependencies. 
@@ -1500,7 +1452,7 @@ library(data.table)
 
 Size = 2
 ```{r structure, include=FALSE}
-## Size = number of time slices to unroll. Markovian 1 would be size 2
+## Size = number of time slices to unroll (markovian 1 would be size 2, markovian 2 size 3, ...)
 t <- proc.time()
 size = 2  
 dt_train <- merged_data3[1:60,]
@@ -1702,6 +1654,11 @@ arcst_dmmhcin20.2<-arc.strength(netdmmhc20in,f_dt_train_dmmhc20_in, criterion="m
 arcs_dmmhc20_in<- netdmmhc20in$arcs
 arcs_dmmhc20_in<-gsub("_t_.*","",arcs_dmmhc20_in)
 arcs_dmmhc20df_in<- as.data.frame(arcs_dmmhc20_in)
+
+#install.packages("writexl")
+library(writexl)
+write_xlsx(arcst_dmmhcin20.2,"C:/Jonás/DBN\\arcst_dmmhcin20.2.xlsx") # I keep the model to perform the cluster analysis in Gephi. 
+write_xlsx(arcs_dmmhc20df_in,"C:/Jonás/DBN\\arcs_dmmhc20df_in.xlsx") # I keep the model to perform the cluster analysis in Gephi. 
 ```
 
 
