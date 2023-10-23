@@ -1,0 +1,1847 @@
+---
+title: "R markdown for the project: Longitudinal analysis of multimorbidity patterns applying dynamic Bayesian networks and clustering analysis in the Andalusian Population Health Database"
+output: word_document
+date: "2023-10-16"
+---
+
+
+This R Markdown is divided into three sections:
+
+# 1. Building the time series dataset
+## 1.1 Incidence
+
+# 2. Dynamic Bayesian network analysis
+## 2.1 DMMHC algorithm
+## 2.2 PSOHO algorithm
+## 2.3 natPSOHO algorithm
+
+# References
+
+
+IMPORTANT. Section 1 explains the steps to build the time series analyzed in this project.
+The resultant time series can be obtained from https://github.com/IonasPi/DBN_Longitudinal-analysis-of-multimorbidity-patterns-applying-dynamic-Bayesian-network/blob/main/data_CI
+With this table, you can skip section 1 (line 29) and go directly to perform the dynamic Bayesian network analysis in section 2 (line 1223).
+
+Initially, 872,649 registries were found. 184,647 unique patients with chronic conditions and 246,144 patients in total.
+The registry was kept if sex was known and if active time was >= 99% of the total possible time, and the final study population was 131,574 individuals. 
+
+
+# 1. Building the time series dataset
+We need to study the population over four-month periods to be able to create the time series planned (cumulative incidences in each period) 
+```{r setup, include=FALSE}
+# To calculate the four-month periods, we first get the difference between the date of diagnosis and the date of birth when they are 45 years old.
+dff$cod_fec_45 <- as.Date(paste(as.numeric(format(dff$COD_FEC_NACIMIENTO,"%Y"))+45,format(dff$COD_FEC_NACIMIENTO,"%m"),format(dff$COD_FEC_NACIMIENTO,"%d"),sep = "-"))
+dff$diff_in_days45 <- as.numeric(difftime(dff$FECHA_INICIO_PAT, dff$cod_fec_45, units = "days"))
+dff$cuat <- floor(dff$diff_in_days45/121.75)
+
+# We subset the population to follow them 
+dffi <- subset(dff, dff$cuat >= 0 & dff$cuat < 60)
+
+# To calculate the number of deaths in each four-month period, we analyze the whole set of patients in dff2. 
+dff2 <- transform(dff2, COD_FEC_NACIMIENTO  = as.Date(as.character(COD_FEC_NACIMIENTO), "%Y%m%d"))
+dff2 <- transform(dff2, COD_FEC_FALLECIMIENTO  = as.Date(as.character(COD_FEC_FALLECIMIENTO), "%Y%m%d"))
+dff2$cod_fec_45 <- as.Date(paste(as.numeric(format(dff2$COD_FEC_NACIMIENTO,"%Y"))+45,format(dff2$COD_FEC_NACIMIENTO,"%m"),format(dff2$COD_FEC_NACIMIENTO,"%d"),sep = "-"))
+dff2$diff_in_days_mort <- as.numeric(difftime(dff2$COD_FEC_FALLECIMIENTO, dff2$COD_FEC_NACIMIENTO, units = "days"))
+dff2$diff_in_days45_mort <- as.numeric(difftime(dff2$COD_FEC_FALLECIMIENTO, dff2$cod_fec_45, units = "days"))
+dff2$cuatmort <- floor(dff2$diff_in_days45_mort/121.75)
+dff21<- subset(dff2, dff2$cuatmort >= 0 & dff2$cuatmort < 60) 
+
+``` 
+
+
+We create a subset for each 4-month period
+```{r setup, include=FALSE}
+
+dat_subseti <- split(dffi, dffi$cuat)
+
+# For dead people
+dat_subset_mort <- split(dff21, dff21$cuatmort)
+# We get the number of deaths for each period
+mifmort<- function(x) return(nrow(as.data.frame(unique(x[,1]))))
+dat_mat_mort<- lapply(dat_subset_mort,mifmort)
+
+```
+
+
+Now, we can create the matrix ID/BPS-codes for each subset
+```{r setup, include=FALSE}
+library(qdap)
+mif<- function(x) return(mtabulate(split(x[,3],x[,1])))
+dat_mati<- lapply(dat_subseti,mif)
+
+# For dead people. we get the matrix of diseases in each period
+# First, we have to get the dead patient who had chronic conditions. 
+dff <- transform(dff, COD_FEC_NACIMIENTO  = as.Date(as.character(COD_FEC_NACIMIENTO), "%Y%m%d"))
+dff <- transform(dff, COD_FEC_FALLECIMIENTO  = as.Date(as.character(COD_FEC_FALLECIMIENTO), "%Y%m%d"))
+dff$diff_in_days_mort <- as.numeric(difftime(dff$COD_FEC_FALLECIMIENTO, dff$COD_FEC_NACIMIENTO, units = "days"))
+dff$diff_in_days45_mort <- as.numeric(difftime(dff$COD_FEC_FALLECIMIENTO, dff$cod_fec_45, units = "days"))
+dff$cuatmort <- floor(dff$diff_in_days45_mort/121.75)
+dff22<- subset(dff, dff$cuatmort >= 0 & dff$cuatmort < 60) 
+dat_subset_mort2 <- split(dff22, dff22$cuatmort)
+# Second, we apply the function mif to get the diseases.
+dat_mat_mort2<- lapply(dat_subset_mort2,mif)
+
+```
+
+We have the first diagnostic date for each patient and group according to this time and diagnosis, so we should have a matrix with binary information (0s, 1s). we checked it, and it is correct.  
+
+```{r setup, include=FALSE}
+
+mif2 <- function(x)(any (x <= 1))
+dat_ti <- lapply(dat_mati, mif2)   # All TRUE
+dat_tm <- lapply(dat_mat_mort2, mif2) # All TRUE
+mif2 <- function(x)(any (x > 1))
+dat_ti <- lapply(dat_mati, mif2)   # All FALSE
+dat_tm <- lapply(dat_mat_mort2, mif2)   # All FALSE
+
+rm(dat_ti, dat_tm)
+
+```
+
+## 1.1 Incidence
+
+```{r setup, include=FALSE}
+
+
+dat0in <- t(as.data.frame(colSums(dat_mati[["0"]])))
+datin <- dff_enf
+dat0in <- merge(dat0in, datin, all=T)
+dat0in <- as.data.frame(colSums(dat0in))
+dat0in[is.na(dat0in)] <- 0
+dat0in <- as.data.frame(t(dat0in))
+z<- 0 #Dead people at the beginning of this period
+x<- 131574 - z #Population studied initially - dead people
+dat0inc <-(dat0in/x)*100 
+
+dat0inmort <- datin # No dead people in t0 
+
+
+dat1in<- t(as.data.frame(colSums(dat_mati[["1"]])))
+dat1in<- merge(dat1in, datin, all=T) 
+dat1in<- t(as.data.frame(colSums(dat1in)))
+dat1in[is.na(dat1in)] <- 0
+
+z0<- 0 # No dead people in t0 
+y0<- x-z0        #Total - deaths 
+n0<- t(as.data.frame(colSums(merge (dat0in, dat0inmort, all=T))))
+w0<- x-n0 #Total at the beginning - incidents previously - deaths previously. it is calculated by BPS condition
+dat1inc <- merge(dat1in, w0, all= T)
+dat1inc <- (dat1inc[1,]/dat1inc[2,])*100  
+
+dat1inmort <- datin # No dead people in t1
+
+
+dat2in<- t(as.data.frame(colSums(dat_mati[["2"]])))
+dat2in<- merge(dat2in, datin, all=T)
+dat2in<- t(as.data.frame(colSums(dat2in)))
+dat2in[is.na(dat2in)] <- 0
+
+z1<- 0
+y1<- y0-z1         
+n1<- t(as.data.frame(colSums(merge (dat1in, dat1inmort, all=T))))
+w1<- y0-n1 
+dat2inc <- merge(dat2in, w1, all= T)
+dat2inc <- (dat2inc[1,]/dat2inc[2,])*100 
+
+dat2inmort <- datin
+
+
+
+dat3in<- t(as.data.frame(colSums(dat_mati[["3"]])))
+dat3in<- merge(dat3in, datin, all=T)
+dat3in<- t(as.data.frame(colSums(dat3in)))
+dat3in[is.na(dat3in)] <- 0
+
+z2<- 0
+y2<- y1-z2        
+n2<- t(as.data.frame(colSums(merge (dat2in, dat2inmort, all=T))))
+w2<- y1-n2  
+dat3inc <- merge(dat3in, w2, all= T)
+dat3inc <- (dat3inc[1,]/dat3inc[2,])*100
+
+dat3inmort <- datin
+
+
+dat4in<- t(as.data.frame(colSums(dat_mati[["4"]]))) 
+dat4in<- merge(dat4in, datin, all=T)
+dat4in<- t(as.data.frame(colSums(dat4in)))
+dat4in[is.na(dat4in)] <- 0
+
+z3<- 0 
+y3<- y2-z3         
+n3<- t(as.data.frame(colSums(merge (dat3in, dat3inmort, all=T))))
+w3<- y2-n3  
+dat4inc <- merge(dat4in, w3, all= T)
+dat4inc <- (dat4inc[1,]/dat4inc[2,])*100
+
+dat4inmort <- datin
+
+
+dat5in<- t(as.data.frame(colSums(dat_mati[["5"]])))
+dat5in<- merge(dat5in, datin, all=T)
+dat5in<- t(as.data.frame(colSums(dat5in)))
+dat5in[is.na(dat5in)] <- 0
+ 
+z4<- 0
+y4<- y3-z4       
+n4<- t(as.data.frame(colSums(merge (dat4in, dat4inmort, all=T))))
+w4<- y3-n4 
+dat5inc <- merge(dat5in, w4, all= T)
+dat5inc <- (dat5inc[1,]/dat5inc[2,])*100
+
+dat5inmort <- datin
+
+
+dat6in<- t(as.data.frame(colSums(dat_mati[["6"]])))
+dat6in<- merge(dat6in, datin, all=T)
+dat6in<- t(as.data.frame(colSums(dat6in)))
+dat6in[is.na(dat6in)] <- 0
+
+z5<- 0
+y5<- y4-z5        
+n5<- t(as.data.frame(colSums(merge (dat5in, dat5inmort, all=T))))
+w5<- y4-n5 
+dat6inc <- merge(dat6in, w5, all= T)
+dat6inc <- (dat6inc[1,]/dat6inc[2,])*100
+
+dat6inmort <- datin
+
+
+
+dat7in<- t(as.data.frame(colSums(dat_mati[["7"]])))
+dat7in<- merge(dat7in, datin, all=T)
+dat7in<- t(as.data.frame(colSums(dat7in)))
+dat7in[is.na(dat7in)] <- 0
+
+z6<- 0
+y6<- y5-z6         
+n6<- t(as.data.frame(colSums(merge (dat6in, dat6inmort, all=T))))
+w6<- y5-n6 
+dat7inc <- merge(dat7in, w6, all= T)
+dat7inc <- (dat7inc[1,]/dat7inc[2,])*100
+
+dat7inmort <- datin
+
+
+dat8in<- t(as.data.frame(colSums(dat_mati[["8"]])))
+dat8in<- merge(dat8in, datin, all=T)
+dat8in<- t(as.data.frame(colSums(dat8in)))
+dat8in[is.na(dat8in)] <- 0
+
+z7<- 0 
+y7<- y6-z7         
+n7<- t(as.data.frame(colSums(merge (dat7in, dat7inmort, all=T))))
+w7<- y6-n7 
+dat8inc <- merge(dat8in, w7, all= T)
+dat8inc <- (dat8inc[1,]/dat8inc[2,])*100
+
+dat8inmort <- datin
+
+
+dat9in<- t(as.data.frame(colSums(dat_mati[["9"]])))
+dat9in<- merge(dat9in, datin, all=T)
+dat9in<- t(as.data.frame(colSums(dat9in)))
+dat9in[is.na(dat9in)] <- 0
+
+z8<- 0
+y8<- y7-z8         
+n8<- t(as.data.frame(colSums(merge (dat8in, dat8inmort, all=T))))
+w8<- y7-n8 
+dat9inc <- merge(dat9in, w8, all= T)
+dat9inc <- (dat9inc[1,]/dat9inc[2,])*100
+
+dat9inmort <- datin
+
+
+dat10in<- t(as.data.frame(colSums(dat_mati[["10"]])))
+dat10in<- merge(dat10in, datin, all=T)
+dat10in<- t(as.data.frame(colSums(dat10in)))
+dat10in[is.na(dat10in)] <- 0
+
+z9<- 0
+y9<- y8-z9         
+n9<- t(as.data.frame(colSums(merge (dat9in, dat9inmort, all=T))))
+w9<- y8-n9 
+dat10inc <- merge(dat10in, w9, all= T)
+dat10inc <- (dat10inc[1,]/dat10inc[2,])*100
+
+dat10inmort <- datin
+
+
+dat11in<- t(as.data.frame(colSums(dat_mati[["11"]])))
+dat11in<- merge(dat11in, datin, all=T)
+dat11in<- t(as.data.frame(colSums(dat11in)))
+dat11in[is.na(dat11in)] <- 0
+
+z10<- 0
+y10<- y9-z10         
+n10<- t(as.data.frame(colSums(merge (dat10in, dat10inmort, all=T))))
+w10<- y9-n10 
+dat11inc <- merge(dat11in, w10, all= T)
+dat11inc <- (dat11inc[1,]/dat11inc[2,])*100
+
+dat11inmort <- datin
+
+dat12in<- t(as.data.frame(colSums(dat_mati[["12"]])))
+dat12in<- merge(dat12in, datin, all=T)
+dat12in<- t(as.data.frame(colSums(dat12in)))
+dat12in[is.na(dat12in)] <- 0
+
+z11<- 0
+y11<- y10-z11         
+n11<- t(as.data.frame(colSums(merge (dat11in, dat11inmort, all=T))))
+w11<- y10-n11 
+dat12inc <- merge(dat12in, w11, all= T)
+dat12inc <- (dat12inc[1,]/dat12inc[2,])*100
+
+dat12inmort <- datin
+
+
+dat13in<- t(as.data.frame(colSums(dat_mati[["13"]])))
+dat13in<- merge(dat13in, datin, all=T)
+dat13in<- t(as.data.frame(colSums(dat13in)))
+dat13in[is.na(dat13in)] <- 0
+
+z12<- 0
+y12<- y11-z12         
+n12<- t(as.data.frame(colSums(merge (dat12in, dat12inmort, all=T))))
+w12<- y11-n12 
+dat13inc <- merge(dat13in, w12, all= T)
+dat13inc <- (dat13inc[1,]/dat13inc[2,])*100
+
+dat13inmort <- datin
+
+
+dat14in<- t(as.data.frame(colSums(dat_mati[["14"]])))
+dat14in<- merge(dat14in, datin, all=T)
+dat14in<- t(as.data.frame(colSums(dat14in)))
+dat14in[is.na(dat14in)] <- 0
+
+z13<- 0
+y13<- y12-z13         
+n13<- t(as.data.frame(colSums(merge (dat13in, dat13inmort, all=T))))
+w13<- y12-n13 
+dat14inc <- merge(dat14in, w13, all= T)
+dat14inc <- (dat14inc[1,]/dat14inc[2,])*100
+
+dat14inmort <- datin
+
+
+dat15in<- t(as.data.frame(colSums(dat_mati[["15"]])))
+dat15in<- merge(dat15in, datin, all=T)
+dat15in<- t(as.data.frame(colSums(dat15in)))
+dat15in[is.na(dat15in)] <- 0
+
+z14<- 0
+y14<- y13-z14         
+n14<- t(as.data.frame(colSums(merge (dat14in, dat14inmort, all=T))))
+w14<- y13-n14 
+dat15inc <- merge(dat15in, w14, all= T)
+dat15inc <- (dat15inc[1,]/dat15inc[2,])*100
+
+dat15inmort <- datin
+
+
+dat16in<- t(as.data.frame(colSums(dat_mati[["16"]])))
+dat16in<- merge(dat16in, datin, all=T)
+dat16in<- t(as.data.frame(colSums(dat16in)))
+dat16in[is.na(dat16in)] <- 0
+
+z15<- 0
+y15<- y14-z15        
+n15<- t(as.data.frame(colSums(merge (dat15in, dat15inmort, all=T))))
+w15<- y14-n15 
+dat16inc <- merge(dat16in, w15, all= T)
+dat16inc <- (dat16inc[1,]/dat16inc[2,])*100
+
+dat16inmort <- datin
+
+
+dat17in<- t(as.data.frame(colSums(dat_mati[["17"]])))
+dat17in<- merge(dat17in, datin, all=T)
+dat17in<- t(as.data.frame(colSums(dat17in)))
+dat17in[is.na(dat17in)] <- 0
+
+z16<- 0
+y16<- y15-z16        
+n16<- t(as.data.frame(colSums(merge (dat16in, dat16inmort, all=T))))
+w16<- y15-n16 
+dat17inc <- merge(dat17in, w16, all= T)
+dat17inc <- (dat17inc[1,]/dat17inc[2,])*100
+
+dat17mort<- t(as.data.frame(colSums(dat_mat_mort2$`17`)))
+dat17mort<- -1*dat17mort
+datin <- dff_enf 
+dat17inmort <- merge(dat17mort, datin, all=T)
+dat17inmort <- t(as.data.frame(colSums(dat17inmort)))
+dat17inmort[is.na(dat17inmort)] <- 0
+dat17inmort <- as.data.frame(dat17inmort)
+
+
+dat18in<- t(as.data.frame(colSums(dat_mati[["18"]])))
+dat18in<- merge(dat18in, datin, all=T)
+dat18in<- t(as.data.frame(colSums(dat18in)))
+dat18in[is.na(dat18in)] <- 0
+
+z17<- dat_mat_mort$`17`
+y17<- y16-z17        
+n17<- t(as.data.frame(colSums(merge (dat17in, dat17inmort, all=T))))
+w17<- y16-n17 
+dat18inc <- merge(dat18in, w17, all= T)
+dat18inc <- (dat18inc[1,]/dat18inc[2,])*100
+
+dat18inmort <- datin
+
+
+dat19in<- t(as.data.frame(colSums(dat_mati[["19"]])))
+dat19in<- merge(dat19in, datin, all=T)
+dat19in<- t(as.data.frame(colSums(dat19in)))
+dat19in[is.na(dat19in)] <- 0
+
+z18<- 0
+y18<- y17-z18         
+n18<- t(as.data.frame(colSums(merge (dat18in, dat18inmort, all=T))))
+w18<- y17-n18 
+dat19inc <- merge(dat19in, w18, all= T)
+dat19inc <- (dat19inc[1,]/dat19inc[2,])*100
+
+dat19inmort <- datin
+
+
+dat20in<- t(as.data.frame(colSums(dat_mati[["20"]])))
+dat20in<- merge(dat20in, datin, all=T)
+dat20in<- t(as.data.frame(colSums(dat20in)))
+dat20in[is.na(dat20in)] <- 0
+
+z19<- 0
+y19<- y18-z19         
+n19<- t(as.data.frame(colSums(merge (dat19in, dat19inmort, all=T))))
+w19<- y18-n19 
+dat20inc <- merge(dat20in, w19, all= T)
+dat20inc <- (dat20inc[1,]/dat20inc[2,])*100
+
+dat20inmort <- datin
+
+
+dat21in<- t(as.data.frame(colSums(dat_mati[["21"]])))
+dat21in<- merge(dat21in, datin, all=T)
+dat21in<- t(as.data.frame(colSums(dat21in)))
+dat21in[is.na(dat21in)] <- 0
+
+z20<- 0
+y20<- y19-z20         
+n20<- t(as.data.frame(colSums(merge (dat20in, dat20inmort, all=T))))
+w20<- y19-n20 
+dat21inc <- merge(dat21in, w20, all= T)
+dat21inc <- (dat21inc[1,]/dat21inc[2,])*100
+
+dat21inmort <- datin
+
+
+dat22in<- t(as.data.frame(colSums(dat_mati[["22"]])))
+dat22in<- merge(dat22in, datin, all=T)
+dat22in<- t(as.data.frame(colSums(dat22in)))
+dat22in[is.na(dat22in)] <- 0
+
+z21<- 0
+y21<- y20-z21         
+n21<- t(as.data.frame(colSums(merge (dat21in, dat21inmort, all=T))))
+w21<- y20-n21 
+dat22inc <- merge(dat22in, w21, all= T)
+dat22inc <- (dat22inc[1,]/dat22inc[2,])*100
+
+dat22inmort <- datin
+
+
+dat23in<- t(as.data.frame(colSums(dat_mati[["23"]])))
+dat23in<- merge(dat23in, datin, all=T)
+dat23in<- t(as.data.frame(colSums(dat23in)))
+dat23in[is.na(dat23in)] <- 0
+
+z22<- 0
+y22<- y21-z22         
+n22<- t(as.data.frame(colSums(merge (dat22in, dat22inmort, all=T))))
+w22<- y21-n22  
+dat23inc <- merge(dat23in, w22, all= T)
+dat23inc <- (dat23inc[1,]/dat23inc[2,])*100
+
+dat23inmort <- datin
+
+
+dat24in<- t(as.data.frame(colSums(dat_mati[["24"]])))
+dat24in<- merge(dat24in, datin, all=T)
+dat24in<- t(as.data.frame(colSums(dat24in)))
+dat24in[is.na(dat24in)] <- 0
+
+z23<- 0
+y23<- y22-z23         
+n23<- t(as.data.frame(colSums(merge (dat23in, dat23inmort, all=T))))
+w23<- y22-n23  
+dat24inc <- merge(dat24in, w23, all= T)
+dat24inc <- (dat24inc[1,]/dat24inc[2,])*100
+
+dat24mort<- t(as.data.frame(colSums(dat_mat_mort2$`24`)))
+dat24mort<- -1*dat24mort
+datin <- dff_enf 
+dat24inmort <- merge(dat24mort, datin, all=T)
+dat24inmort <- t(as.data.frame(colSums(dat24inmort)))
+dat24inmort[is.na(dat24inmort)] <- 0
+dat24inmort <- as.data.frame(dat24inmort)
+
+
+dat25in<- t(as.data.frame(colSums(dat_mati[["25"]])))
+dat25in<- merge(dat25in, datin, all=T)
+dat25in<- t(as.data.frame(colSums(dat25in)))
+dat25in[is.na(dat25in)] <- 0
+
+z24<- dat_mat_mort$`24`
+y24<- y23-z24         
+n24<- t(as.data.frame(colSums(merge (dat24in, dat24inmort, all=T))))
+w24<- y23-n24 
+dat25inc <- merge(dat25in, w24, all= T)
+dat25inc <- (dat25inc[1,]/dat25inc[2,])*100
+
+dat25inmort <- datin
+
+
+dat26in<- t(as.data.frame(colSums(dat_mati[["26"]])))
+dat26in<- merge(dat26in, datin, all=T)
+dat26in<- t(as.data.frame(colSums(dat26in)))
+dat26in[is.na(dat26in)] <- 0
+
+z25<- 0
+y25<- y24-z25         
+n25<- t(as.data.frame(colSums(merge (dat25in, dat25inmort, all=T))))
+w25<- y24-n25  
+dat26inc <- merge(dat26in, w25, all= T)
+dat26inc <- (dat26inc[1,]/dat26inc[2,])*100
+
+dat26inmort <- datin
+
+
+dat27in<- t(as.data.frame(colSums(dat_mati[["27"]])))
+dat27in<- merge(dat27in, datin, all=T)
+dat27in<- t(as.data.frame(colSums(dat27in)))
+dat27in[is.na(dat27in)] <- 0
+
+z26<- 0
+y26<- y25-z26         
+n26<- t(as.data.frame(colSums(merge (dat26in, dat26inmort, all=T))))
+w26<- y25-n26  
+dat27inc <- merge(dat27in, w26, all= T)
+dat27inc <- (dat27inc[1,]/dat27inc[2,])*100
+
+dat27inmort <- datin
+
+
+dat28in<- t(as.data.frame(colSums(dat_mati[["28"]])))
+dat28in<- merge(dat28in, datin, all=T)
+dat28in<- t(as.data.frame(colSums(dat28in)))
+dat28in[is.na(dat28in)] <- 0
+
+z27<- 0
+y27<- y26-z27         
+n27<- t(as.data.frame(colSums(merge (dat27in, dat27inmort, all=T))))
+w27<- y26-n27  
+dat28inc <- merge(dat28in, w27, all= T)
+dat28inc <- (dat28inc[1,]/dat28inc[2,])*100
+
+dat28mort<- t(as.data.frame(colSums(dat_mat_mort2$`28`)))
+dat28mort<- -1*dat28mort
+datin <- dff_enf 
+dat28inmort <- merge(dat28mort, datin, all=T)
+dat28inmort <- t(as.data.frame(colSums(dat28inmort)))
+dat28inmort[is.na(dat28inmort)] <- 0
+dat28inmort <- as.data.frame(dat28inmort)
+
+
+dat29in<- t(as.data.frame(colSums(dat_mati[["29"]])))
+dat29in<- merge(dat29in, datin, all=T)
+dat29in<- t(as.data.frame(colSums(dat29in)))
+dat29in[is.na(dat29in)] <- 0
+
+z28<- dat_mat_mort$`28`
+y28<- y27-z28         
+n28<- t(as.data.frame(colSums(merge (dat28in, dat28inmort, all=T))))
+w28<- y27-n28 
+dat29inc <- merge(dat29in, w28, all= T)
+dat29inc <- (dat29inc[1,]/dat29inc[2,])*100
+
+dat29mort<- t(as.data.frame(colSums(dat_mat_mort2$`29`)))
+dat29mort<- -1*dat29mort
+datin <- dff_enf 
+dat29inmort <- merge(dat29mort, datin, all=T)
+dat29inmort <- t(as.data.frame(colSums(dat29inmort)))
+dat29inmort[is.na(dat29inmort)] <- 0
+dat29inmort <- as.data.frame(dat29inmort)
+
+
+dat30in<- t(as.data.frame(colSums(dat_mati[["30"]])))
+dat30in<- merge(dat30in, datin, all=T)
+dat30in<- t(as.data.frame(colSums(dat30in)))
+dat30in[is.na(dat30in)] <- 0
+
+z29<- dat_mat_mort$`29`
+y29<- y28-z29         
+n29<- t(as.data.frame(colSums(merge (dat29in, dat29inmort, all=T))))
+w29<- y28-n29  
+dat30inc <- merge(dat30in, w29, all= T)
+dat30inc <- (dat30inc[1,]/dat30inc[2,])*100
+
+dat30inmort <- datin
+
+ 
+dat31in<- t(as.data.frame(colSums(dat_mati[["31"]])))
+dat31in<- merge(dat31in, datin, all=T)
+dat31in<- t(as.data.frame(colSums(dat31in)))
+dat31in[is.na(dat31in)] <- 0
+
+z30<- 0
+y30<- y29-z30         
+n30<- t(as.data.frame(colSums(merge (dat30in, dat30inmort, all=T))))
+w30<- y29-n30  
+dat31inc <- merge(dat31in, w30, all= T)
+dat31inc <- (dat31inc[1,]/dat31inc[2,])*100
+
+dat31mort<- t(as.data.frame(colSums(dat_mat_mort2$`31`)))
+dat31mort<- -1*dat31mort
+datin <- dff_enf 
+dat31inmort <- merge(dat31mort, datin, all=T)
+dat31inmort <- t(as.data.frame(colSums(dat31inmort)))
+dat31inmort[is.na(dat31inmort)] <- 0
+dat31inmort <- as.data.frame(dat31inmort)
+
+dat32in<- t(as.data.frame(colSums(dat_mati[["32"]])))
+dat32in<- merge(dat32in, datin, all=T)
+dat32in<- t(as.data.frame(colSums(dat32in)))
+dat32in[is.na(dat32in)] <- 0
+
+z31<- dat_mat_mort$`31`
+y31<- y30-z31         
+n31<- t(as.data.frame(colSums(merge (dat31in, dat31inmort, all=T))))
+w31<- y30-n31  
+dat32inc <- merge(dat32in, w31, all= T)
+dat32inc <- (dat32inc[1,]/dat32inc[2,])*100
+
+dat32inmort <- datin
+
+
+dat33in<- t(as.data.frame(colSums(dat_mati[["33"]])))
+dat33in<- merge(dat33in, datin, all=T)
+dat33in<- t(as.data.frame(colSums(dat33in)))
+dat33in[is.na(dat33in)] <- 0
+
+z32<- 0
+y32<- y31-z32         
+n32<- t(as.data.frame(colSums(merge (dat32in, dat32inmort, all=T))))
+w32<- y31-n32  
+dat33inc <- merge(dat33in, w32, all= T)
+dat33inc <- (dat33inc[1,]/dat33inc[2,])*100
+
+dat33inmort <- datin
+
+
+dat34in<- t(as.data.frame(colSums(dat_mati[["34"]])))
+dat34in<- merge(dat34in, datin, all=T)
+dat34in<- t(as.data.frame(colSums(dat34in)))
+dat34in[is.na(dat34in)] <- 0
+
+z33<- 0
+y33<- y32-z33         
+n33<- t(as.data.frame(colSums(merge (dat33in, dat33inmort, all=T))))
+w33<- y32-n33  
+dat34inc <- merge(dat34in, w33, all= T)
+dat34inc <- (dat34inc[1,]/dat34inc[2,])*100
+
+dat34inmort <- datin
+
+
+dat35in<- t(as.data.frame(colSums(dat_mati[["35"]])))
+dat35in<- merge(dat35in, datin, all=T)
+dat35in<- t(as.data.frame(colSums(dat35in)))
+dat35in[is.na(dat35in)] <- 0
+
+z34<- 0
+y34<- y33-z34         
+n34<- t(as.data.frame(colSums(merge (dat34in, dat34inmort, all=T))))
+w34<- y33-n34  
+dat35inc <- merge(dat35in, w34, all= T)
+dat35inc <- (dat35inc[1,]/dat35inc[2,])*100
+
+dat35mort<- t(as.data.frame(colSums(dat_mat_mort2$`35`)))
+dat35mort<- -1*dat35mort
+datin <- dff_enf 
+dat35inmort <- merge(dat35mort, datin, all=T)
+dat35inmort <- t(as.data.frame(colSums(dat35inmort)))
+dat35inmort[is.na(dat35inmort)] <- 0
+dat35inmort <- as.data.frame(dat35inmort)
+
+
+dat36in<- t(as.data.frame(colSums(dat_mati[["36"]])))
+dat36in<- merge(dat36in, datin, all=T)
+dat36in<- t(as.data.frame(colSums(dat36in)))
+dat36in[is.na(dat36in)] <- 0
+
+z35<- dat_mat_mort$`35`
+y35<- y34-z35         
+n35<- t(as.data.frame(colSums(merge (dat35in, dat35inmort, all=T))))
+w35<- y34-n35 
+dat36inc <- merge(dat36in, w35, all= T)
+dat36inc <- (dat36inc[1,]/dat36inc[2,])*100
+
+dat36inmort <- datin
+
+
+dat37in<- t(as.data.frame(colSums(dat_mati[["37"]])))
+dat37in<- merge(dat37in, datin, all=T)
+dat37in<- t(as.data.frame(colSums(dat37in)))
+dat37in[is.na(dat37in)] <- 0
+
+z36<- 0
+y36<- y35-z36         
+n36<- t(as.data.frame(colSums(merge (dat36in, dat36inmort, all=T))))
+w36<- y35-n36  
+dat37inc <- merge(dat37in, w36, all= T)
+dat37inc <- (dat37inc[1,]/dat37inc[2,])*100
+
+dat37inmort <- datin
+
+
+dat38in<- t(as.data.frame(colSums(dat_mati[["38"]])))
+dat38in<- merge(dat38in, datin, all=T)
+dat38in<- t(as.data.frame(colSums(dat38in)))
+dat38in[is.na(dat38in)] <- 0
+
+z37<- 0
+y37<- y36-z37         
+n37<- t(as.data.frame(colSums(merge (dat37in, dat37inmort, all=T))))
+w37<- y36-n37  
+dat38inc <- merge(dat38in, w37, all= T)
+dat38inc <- (dat38inc[1,]/dat38inc[2,])*100
+
+dat38inmort <- datin
+
+
+dat39in<- t(as.data.frame(colSums(dat_mati[["39"]])))
+dat39in<- merge(dat39in, datin, all=T)
+dat39in<- t(as.data.frame(colSums(dat39in)))
+dat39in[is.na(dat39in)] <- 0
+
+z38<- 0
+y38<- y37-z38         
+n38<- t(as.data.frame(colSums(merge (dat38in, dat38inmort, all=T))))
+w38<- y37-n38  
+dat39inc <- merge(dat39in, w38, all= T)
+dat39inc <- (dat39inc[1,]/dat39inc[2,])*100
+
+dat39mort<- t(as.data.frame(colSums(dat_mat_mort2$`39`)))
+dat39mort<- -1*dat39mort
+datin <- dff_enf 
+dat39inmort <- merge(dat39mort, datin, all=T)
+dat39inmort <- t(as.data.frame(colSums(dat39inmort)))
+dat39inmort[is.na(dat39inmort)] <- 0
+dat39inmort <- as.data.frame(dat39inmort)
+
+
+dat40in<- t(as.data.frame(colSums(dat_mati[["40"]])))
+dat40in<- merge(dat40in, datin, all=T)
+dat40in<- t(as.data.frame(colSums(dat40in)))
+dat40in[is.na(dat40in)] <- 0
+
+z39<- dat_mat_mort$`39`
+y39<- y38-z39         
+n39<- t(as.data.frame(colSums(merge (dat39in, dat39inmort, all=T))))
+w39<- y38-n39  
+dat40inc <- merge(dat40in, w39, all= T)
+dat40inc <- (dat40inc[1,]/dat40inc[2,])*100
+
+dat40inmort <- datin
+
+
+dat41in<- t(as.data.frame(colSums(dat_mati[["41"]])))
+dat41in<- merge(dat41in, datin, all=T)
+dat41in<- t(as.data.frame(colSums(dat41in)))
+dat41in[is.na(dat41in)] <- 0
+
+z40<- 0
+y40<- y39-z40         
+n40<- t(as.data.frame(colSums(merge (dat40in, dat40inmort, all=T))))
+w40<- y39-n40  
+dat41inc <- merge(dat41in, w40, all= T)
+dat41inc <- (dat41inc[1,]/dat41inc[2,])*100
+
+dat41mort<- t(as.data.frame(colSums(dat_mat_mort2$`41`)))
+dat41mort<- -1*dat41mort
+datin <- dff_enf 
+dat41inmort <- merge(dat41mort, datin, all=T)
+dat41inmort <- t(as.data.frame(colSums(dat41inmort)))
+dat41inmort[is.na(dat41inmort)] <- 0
+dat41inmort <- as.data.frame(dat41inmort)
+
+
+dat42in<- t(as.data.frame(colSums(dat_mati[["42"]])))
+dat42in<- merge(dat42in, datin, all=T)
+dat42in<- t(as.data.frame(colSums(dat42in)))
+dat42in[is.na(dat42in)] <- 0
+
+z41<- dat_mat_mort$`41`
+y41<- y40-z41         
+n41<- t(as.data.frame(colSums(merge (dat41in, dat41inmort, all=T))))
+w41<- y40-n41  
+dat42inc <- merge(dat42in, w41, all= T)
+dat42inc <- (dat42inc[1,]/dat42inc[2,])*100
+
+dat42inmort <- datin
+
+
+dat43in<- t(as.data.frame(colSums(dat_mati[["43"]])))
+dat43in<- merge(dat43in, datin, all=T)
+dat43in<- t(as.data.frame(colSums(dat43in)))
+dat43in[is.na(dat43in)] <- 0
+
+z42<- 0
+y42<- y41-z42         
+n42<- t(as.data.frame(colSums(merge (dat42in, dat42inmort, all=T))))
+w42<- y41-n42  
+dat43inc <- merge(dat43in, w42, all= T)
+dat43inc <- (dat43inc[1,]/dat43inc[2,])*100
+
+dat43inmort <- datin # A patient died in t43 but he/she did not have any BPS condition
+
+
+dat44in<- t(as.data.frame(colSums(dat_mati[["44"]])))
+dat44in<- merge(dat44in, datin, all=T)
+dat44in<- t(as.data.frame(colSums(dat44in)))
+dat44in[is.na(dat44in)] <- 0
+
+z43<- dat_mat_mort$`43` #we consider here that a patient died in t43
+y43<- y42-z43         
+n43<- t(as.data.frame(colSums(merge (dat43in, dat43inmort, all=T))))
+w43<- y42-n43  
+dat44inc <- merge(dat44in, w43, all= T)
+dat44inc <- (dat44inc[1,]/dat44inc[2,])*100
+
+dat44inmort <- datin
+
+
+dat45in<- t(as.data.frame(colSums(dat_mati[["45"]])))
+dat45in<- merge(dat45in, datin, all=T)
+dat45in<- t(as.data.frame(colSums(dat45in)))
+dat45in[is.na(dat45in)] <- 0
+
+z44<- 0
+y44<- y43-z44        
+n44<- t(as.data.frame(colSums(merge (dat44in, dat44inmort, all=T))))
+w44<- y43-n44  
+dat45inc <- merge(dat45in, w44, all= T)
+dat45inc <- (dat45inc[1,]/dat45inc[2,])*100
+
+dat45inmort <- datin
+
+
+dat46in<- t(as.data.frame(colSums(dat_mati[["46"]])))
+dat46in<- merge(dat46in, datin, all=T)
+dat46in<- t(as.data.frame(colSums(dat46in)))
+dat46in[is.na(dat46in)] <- 0
+
+z45<- 0
+y45<- y44-z45         
+n45<- t(as.data.frame(colSums(merge (dat45in, dat45inmort, all=T))))
+w45<- y44-n45   
+dat46inc <- merge(dat46in, w45, all= T)
+dat46inc <- (dat46inc[1,]/dat46inc[2,])*100
+
+dat46inmort <- datin
+
+
+dat47in<- t(as.data.frame(colSums(dat_mati[["47"]])))
+dat47in<- merge(dat47in, datin, all=T)
+dat47in<- t(as.data.frame(colSums(dat47in)))
+dat47in[is.na(dat47in)] <- 0
+
+z46<- 0
+y46<- y45-z46         
+n46<- t(as.data.frame(colSums(merge (dat46in, dat46inmort, all=T))))
+w46<- y45-n46  
+dat47inc <- merge(dat47in, w46, all= T)
+dat47inc <- (dat47inc[1,]/dat47inc[2,])*100
+
+dat47inmort <- datin
+
+
+dat48in<- t(as.data.frame(colSums(dat_mati[["48"]])))
+dat48in<- merge(dat48in, datin, all=T)
+dat48in<- t(as.data.frame(colSums(dat48in)))
+dat48in[is.na(dat48in)] <- 0
+
+z47<- 0
+y47<- y46-z47         
+n47<- t(as.data.frame(colSums(merge (dat47in, dat47inmort, all=T))))
+w47<- y46-n47  
+dat48inc <- merge(dat48in, w47, all= T)
+dat48inc <- (dat48inc[1,]/dat48inc[2,])*100
+
+dat48inmort <- datin
+
+
+dat49in<- t(as.data.frame(colSums(dat_mati[["49"]])))
+dat49in<- merge(dat49in, datin, all=T)
+dat49in<- t(as.data.frame(colSums(dat49in)))
+dat49in[is.na(dat49in)] <- 0
+
+z48<- 0
+y48<- y47-z48         
+n48<- t(as.data.frame(colSums(merge (dat48in, dat48inmort, all=T))))
+w48<- y47-n48   
+dat49inc <- merge(dat49in, w48, all= T)
+dat49inc <- (dat49inc[1,]/dat49inc[2,])*100
+
+dat49inmort <- datin
+
+
+dat50in<- t(as.data.frame(colSums(dat_mati[["50"]])))
+dat50in<- merge(dat50in, datin, all=T)
+dat50in<- t(as.data.frame(colSums(dat50in)))
+dat50in[is.na(dat50in)] <- 0
+
+z49<- 0
+y49<- y48-z49         
+n49<- t(as.data.frame(colSums(merge (dat49in, dat49inmort, all=T))))
+w49<- y48-n49  
+dat50inc <- merge(dat50in, w49, all= T)
+dat50inc <- (dat50inc[1,]/dat50inc[2,])*100
+
+dat50mort<- t(as.data.frame(colSums(dat_mat_mort2$`50`)))
+dat50mort<- -1*dat50mort
+datin <- dff_enf 
+dat50inmort <- merge(dat50mort, datin, all=T)
+dat50inmort <- t(as.data.frame(colSums(dat50inmort)))
+dat50inmort[is.na(dat50inmort)] <- 0
+dat50inmort <- as.data.frame(dat50inmort)
+
+
+dat51in<- t(as.data.frame(colSums(dat_mati[["51"]])))
+dat51in<- merge(dat51in, datin, all=T)
+dat51in<- t(as.data.frame(colSums(dat51in)))
+dat51in[is.na(dat51in)] <- 0
+
+z50<- dat_mat_mort$`50`
+y50<- y49-z50        
+n50<- t(as.data.frame(colSums(merge (dat50in, dat50inmort, all=T))))
+w50<- y49-n50  
+dat51inc <- merge(dat51in, w50, all= T)
+dat51inc <- (dat51inc[1,]/dat51inc[2,])*100
+
+dat51inmort <- datin
+
+
+dat52in<- t(as.data.frame(colSums(dat_mati[["52"]])))
+dat52in<- merge(dat52in, datin, all=T)
+dat52in<- t(as.data.frame(colSums(dat52in)))
+dat52in[is.na(dat52in)] <- 0
+
+z51<- 0
+y51<- y50-z51         
+n51<- t(as.data.frame(colSums(merge (dat51in, dat51inmort, all=T))))
+w51<- y50-n51  
+dat52inc <- merge(dat52in, w51, all= T)
+dat52inc <- (dat52inc[1,]/dat52inc[2,])*100
+
+dat52inmort <- datin # A patient died in t52 but he/she did not have any BPS condition
+
+dat53in<- t(as.data.frame(colSums(dat_mati[["53"]])))
+dat53in<- merge(dat53in, datin, all=T)
+dat53in<- t(as.data.frame(colSums(dat53in)))
+dat53in[is.na(dat53in)] <- 0
+
+z52<- dat_mat_mort$`52` # A patient died in t52 but he/she did not have any BPS condition
+y52<- y51-z52        
+n52<- t(as.data.frame(colSums(merge (dat52in, dat52inmort, all=T))))
+w52<- y51-n52  
+dat53inc <- merge(dat53in, w52, all= T)
+dat53inc <- (dat53inc[1,]/dat53inc[2,])*100
+
+dat53mort<- t(as.data.frame(colSums(dat_mat_mort2$`53`)))
+dat53mort<- -1*dat53mort
+datin <- dff_enf 
+dat53inmort <- merge(dat53mort, datin, all=T)
+dat53inmort <- t(as.data.frame(colSums(dat53inmort)))
+dat53inmort[is.na(dat53inmort)] <- 0
+dat53inmort <- as.data.frame(dat53inmort)
+
+
+dat54in<- t(as.data.frame(colSums(dat_mati[["54"]])))
+dat54in<- merge(dat54in, datin, all=T)
+dat54in<- t(as.data.frame(colSums(dat54in)))
+dat54in[is.na(dat54in)] <- 0
+
+z53<- dat_mat_mort$`53`
+y53<- y52-z53         
+n53<- t(as.data.frame(colSums(merge (dat53in, dat53inmort, all=T))))
+w53<- y52-n53  
+dat54inc <- merge(dat54in, w53, all= T)
+dat54inc <- (dat54inc[1,]/dat54inc[2,])*100
+
+dat54inmort <- datin
+
+
+dat55in<- t(as.data.frame(colSums(dat_mati[["55"]])))
+dat55in<- merge(dat55in, datin, all=T)
+dat55in<- t(as.data.frame(colSums(dat55in)))
+dat55in[is.na(dat55in)] <- 0
+
+z54<- 0
+y54<- y53-z54         
+n54<- t(as.data.frame(colSums(merge (dat54in, dat54inmort, all=T))))
+w54<- y53-n54 
+dat55inc <- merge(dat55in, w54, all= T)
+dat55inc <- (dat55inc[1,]/dat55inc[2,])*100
+
+dat55mort<- t(as.data.frame(colSums(dat_mat_mort2$`55`)))
+dat55mort<- -1*dat55mort
+datin <- dff_enf 
+dat55inmort <- merge(dat55mort, datin, all=T)
+dat55inmort <- t(as.data.frame(colSums(dat55inmort)))
+dat55inmort[is.na(dat55inmort)] <- 0
+dat55inmort <- as.data.frame(dat55inmort)
+
+
+dat56in<- t(as.data.frame(colSums(dat_mati[["56"]])))
+dat56in<- merge(dat56in, datin, all=T)
+dat56in<- t(as.data.frame(colSums(dat56in)))
+dat56in[is.na(dat56in)] <- 0
+
+z55<- dat_mat_mort$`55`
+y55<- y54-z55         
+n55<- t(as.data.frame(colSums(merge (dat55in, dat55inmort, all=T))))
+w55<- y54-n55  
+dat56inc <- merge(dat56in, w55, all= T)
+dat56inc <- (dat56inc[1,]/dat56inc[2,])*100
+
+dat56mort<- t(as.data.frame(colSums(dat_mat_mort2$`56`)))
+dat56mort<- -1*dat56mort
+datin <- dff_enf 
+dat56inmort <- merge(dat56mort, datin, all=T)
+dat56inmort <- t(as.data.frame(colSums(dat56inmort)))
+dat56inmort[is.na(dat56inmort)] <- 0
+dat56inmort <- as.data.frame(dat56inmort)
+
+
+dat57in<- t(as.data.frame(colSums(dat_mati[["57"]])))
+dat57in<- merge(dat57in, datin, all=T)
+dat57in<- t(as.data.frame(colSums(dat57in)))
+dat57in[is.na(dat57in)] <- 0
+
+z56<- dat_mat_mort$`56`
+y56<- y55-z56         
+n56<- t(as.data.frame(colSums(merge (dat56in, dat56inmort, all=T))))
+w56<- y55-n56  
+dat57inc <- merge(dat57in, w56, all= T)
+dat57inc <- (dat57inc[1,]/dat57inc[2,])*100
+
+dat57mort<- t(as.data.frame(colSums(dat_mat_mort2$`57`)))
+dat57mort<- -1*dat57mort
+datin <- dff_enf 
+dat57inmort <- merge(dat57mort, datin, all=T)
+dat57inmort <- t(as.data.frame(colSums(dat57inmort)))
+dat57inmort[is.na(dat57inmort)] <- 0
+dat57inmort <- as.data.frame(dat57inmort)
+
+
+dat58in<- t(as.data.frame(colSums(dat_mati[["58"]])))
+dat58in<- merge(dat58in, datin, all=T)
+dat58in<- t(as.data.frame(colSums(dat58in)))
+dat58in[is.na(dat58in)] <- 0
+
+z57<- dat_mat_mort$`57`
+y57<- y56-z57         
+n57<- t(as.data.frame(colSums(merge (dat57in, dat57inmort, all=T))))
+w57<- y56-n57  
+dat58inc <- merge(dat58in, w57, all= T)
+dat58inc <- (dat58inc[1,]/dat58inc[2,])*100
+
+dat58mort<- t(as.data.frame(colSums(dat_mat_mort2$`58`)))
+dat58mort<- -1*dat58mort
+datin <- dff_enf 
+dat58inmort <- merge(dat58mort, datin, all=T)
+dat58inmort <- t(as.data.frame(colSums(dat58inmort)))
+dat58inmort[is.na(dat58inmort)] <- 0
+dat58inmort <- as.data.frame(dat58inmort)
+
+
+dat59in<- t(as.data.frame(colSums(dat_mati[["59"]])))
+dat59in<- merge(dat59in, datin, all=T)
+dat59in<- t(as.data.frame(colSums(dat59in)))
+dat59in[is.na(dat59in)] <- 0
+
+z58<- dat_mat_mort$`58`
+y58<- y57-z58         
+n58<- t(as.data.frame(colSums(merge (dat58in, dat58inmort, all=T))))
+w58<- y57-n58  
+dat59inc <- merge(dat59in, w58, all= T)
+dat59inc <- (dat59inc[1,]/dat59inc[2,])*100
+
+dat59mort<- t(as.data.frame(colSums(dat_mat_mort2$`59`)))
+dat59mort<- -1*dat59mort
+datin <- dff_enf 
+dat59inmort <- merge(dat59mort, datin, all=T)
+dat59inmort <- t(as.data.frame(colSums(dat59inmort)))
+dat59inmort[is.na(dat59inmort)] <- 0
+dat59inmort <- as.data.frame(dat59inmort)
+
+```
+
+
+Each slice is merged with the next one. 
+
+```{r setup, include=FALSE}
+
+#Time series for cumulative incidence
+datosinc <- rbind.data.frame(dat0inc, dat1inc, dat2inc,dat3inc, dat4inc, dat5inc,dat6inc, dat7inc,dat8inc, dat9inc,dat10inc, dat11inc,dat12inc, dat13inc,dat14inc, dat15inc,dat16inc, dat17inc,dat18inc, dat19inc,dat20inc, dat21inc,dat22inc, dat23inc,dat24inc, dat25inc,dat26inc, dat27inc,dat28inc, dat29inc,dat30inc, dat31inc,dat32inc, dat33inc,dat34inc, dat35inc,dat36inc, dat37inc,dat38inc, dat39inc,dat40inc, dat41inc,dat42inc, dat43inc,dat44inc, dat45inc, dat46inc, dat47inc,dat48inc, dat49inc, dat50inc, dat51inc,dat52inc, dat53inc,dat54inc, dat55inc, dat56inc, dat57inc, dat58inc, dat59inc, dat60inc, dat61inc,dat62inc)
+
+#Plot to show incidence per four-month period.
+plot(datosinc$`913`) # HTA. Similar pattern with acuter decrease
+plot(datosinc$`914`) # HF. Slow ascent with a peak at the end
+plot(datosinc$`910`) # IHD. Slow ascent with a peak at the end
+plot(datosinc$`402`) # DLP. There is no flat phase, rise and fall. Peak around t30 (55 years)
+plot(datosinc$`401`) # DM2. Rise, peak around t30 and stable, or slow decline since
+plot(datosinc$`507`) # Anxiety. Small flat phase (t20-t30), rise and fall. Peak around t20 (52 years)
+plot(datosinc$`203`) # Colon cancer. Rise with a peak at the end
+
+merged_data3<- data_CI
+
+```
+
+
+```{r setup, include=FALSE}
+#Time series for incident cases 
+datosin <- rbind.data.frame(dat0in, dat1in, dat2in,dat3in, dat4in, dat5in,dat6in, dat7in,dat8in, dat9in,dat10in, dat11in,dat12in, dat13in,dat14in, dat15in,dat16in, dat17in,dat18in, dat19in,dat20in, dat21in,dat22in, dat23in,dat24in, dat25in,dat26in, dat27in,dat28in, dat29in,dat30in, dat31in,dat32in, dat33in,dat34in, dat35in,dat36in, dat37in,dat38in, dat39in,dat40in, dat41in,dat42in, dat43in,dat44in, dat45in, dat46in, dat47in,dat48in, dat49in, dat50in, dat51in,dat52in, dat53in,dat54in, dat55in, dat56in, dat57in, dat58in, dat59in, dat60in, dat61in,dat62in)
+
+#Plot to show the total # of incident cases per four-month period. 
+datosin$suma <- rowSums(datosin) 
+plot(datosin$suma)  # Total. Rise to t30, then stability with some decline.
+```
+
+
+
+We translate column names to chronic conditions in English. 
+
+#Incidence
+```{r setup, include=FALSE}
+names(merged_data3)[names(merged_data3)=="913"] <- "Hypertension"
+names(merged_data3)[names(merged_data3)=="502"] <- "Alcohol dependence"
+names(merged_data3)[names(merged_data3)=="503"] <- "Tobacco dependence"
+names(merged_data3)[names(merged_data3)=="401"] <- "Diabetes"
+names(merged_data3)[names(merged_data3)=="402"] <- "Dyslipidemia"
+names(merged_data3)[names(merged_data3)=="1001"] <- "COPD"
+names(merged_data3)[names(merged_data3)=="1101"] <- "Liver disease (except cirrhosis)"
+names(merged_data3)[names(merged_data3)=="1302"] <- "Osteoarthritis, spondylosis"
+names(merged_data3)[names(merged_data3)=="404"] <- "Obesity"
+names(merged_data3)[names(merged_data3)=="507"] <- "Anxiety"
+names(merged_data3)[names(merged_data3)=="910"] <- "Ischemic heart disease"
+names(merged_data3)[names(merged_data3)=="506"] <- "Mood disorder"
+names(merged_data3)[names(merged_data3)=="1401"] <- "Renal failure"
+names(merged_data3)[names(merged_data3)=="1103"] <- "Cirrhosis"
+names(merged_data3)[names(merged_data3)=="914"] <- "Heart failure"
+names(merged_data3)[names(merged_data3)=="206"] <- "Lung cancer"
+names(merged_data3)[names(merged_data3)=="906"] <- "Extremity arterial disease"
+names(merged_data3)[names(merged_data3)=="909"] <- "Atrial fibrillation"
+names(merged_data3)[names(merged_data3)=="604"] <- "Neurological disease with non-stroke motor deficit"
+names(merged_data3)[names(merged_data3)=="911"] <- "Acquired valvulopathy"
+names(merged_data3)[names(merged_data3)=="403"] <- "Hypothyroidism"
+names(merged_data3)[names(merged_data3)=="703"] <- "Retinopathy"
+names(merged_data3)[names(merged_data3)=="203"] <- "Colon cancer"
+names(merged_data3)[names(merged_data3)=="210"] <- "Breast cancer"
+names(merged_data3)[names(merged_data3)=="201"] <- "Hair and neck cancer"
+names(merged_data3)[names(merged_data3)=="217"] <- "Bladder cancer"
+names(merged_data3)[names(merged_data3)=="205"] <- "Pancreatic cancer"
+names(merged_data3)[names(merged_data3)=="202"] <- "Stomach cancer"
+names(merged_data3)[names(merged_data3)=="214"] <- "Prostatic cancer"
+names(merged_data3)[names(merged_data3)=="204"] <- "Liver cancer"
+names(merged_data3)[names(merged_data3)=="1307"] <- "Fibromyalgia"
+names(merged_data3)[names(merged_data3)=="505"] <- "Psychosis"
+names(merged_data3)[names(merged_data3)=="219"] <- "Non-Hodgkin lymphoma"
+names(merged_data3)[names(merged_data3)=="1305"] <- "Rheumatoid arthritis"
+names(merged_data3)[names(merged_data3)=="501"] <- "Other organic mental disorder"
+names(merged_data3)[names(merged_data3)=="1102"] <- "Hepatic steatosis"
+names(merged_data3)[names(merged_data3)=="221"] <- "Inmunoproliferative cancer"
+names(merged_data3)[names(merged_data3)=="216"] <- "Renal cancer"
+names(merged_data3)[names(merged_data3)=="1303"] <- "Gout and other arthropathies due to crystals"
+names(merged_data3)[names(merged_data3)=="1201"] <- "Psoriasis"
+names(merged_data3)[names(merged_data3)=="702"] <- "Glaucoma"
+names(merged_data3)[names(merged_data3)=="1104"] <- "Gastroesophageal reflux disease"
+names(merged_data3)[names(merged_data3)=="1402"] <- "Urinary lithiasis"
+names(merged_data3)[names(merged_data3)=="1002"] <- "Asthma"
+names(merged_data3)[names(merged_data3)=="1304"] <- "Other arthropathy"
+names(merged_data3)[names(merged_data3)=="601"] <- "Epilepsy"
+names(merged_data3)[names(merged_data3)=="220"] <- "Leukemia"
+names(merged_data3)[names(merged_data3)=="1105"] <- "Regional enteritis and ulcerative colitis"
+names(merged_data3)[names(merged_data3)=="504"] <- "Substance dependence, other"
+names(merged_data3)[names(merged_data3)=="908"] <- "Artery aneurysm"
+names(merged_data3)[names(merged_data3)=="602"] <- "Parkinson´s disease"
+names(merged_data3)[names(merged_data3)=="208"] <- "Bone and soft tissue cancer"
+names(merged_data3)[names(merged_data3)=="213"] <- "Ovarian cancer"
+names(merged_data3)[names(merged_data3)=="1301"] <- "Osteoporosis"
+names(merged_data3)[names(merged_data3)=="212"] <- "Cervical cancer"
+names(merged_data3)[names(merged_data3)=="905"] <- "Cerebrovascular disease sequel"
+names(merged_data3)[names(merged_data3)=="1106"] <- "Malabsorption syndrome and food intolerance"
+names(merged_data3)[names(merged_data3)=="101"] <- "HIV"
+names(merged_data3)[names(merged_data3)=="701"] <- "Age-related macular degeneration"
+names(merged_data3)[names(merged_data3)=="211"] <- "Uterine cancer"
+names(merged_data3)[names(merged_data3)=="904"] <- "Occlusion or stenosis of precerebral arteries"
+names(merged_data3)[names(merged_data3)=="1306"] <- "Collagen disease and vasculitis"
+names(merged_data3)[names(merged_data3)=="514"] <- "Childhood-adolescent onset disorder"
+names(merged_data3)[names(merged_data3)=="510"] <- "Personality and behavior disorder in adults"
+names(merged_data3)[names(merged_data3)=="500"] <- "Dementia"
+names(merged_data3)[names(merged_data3)=="209"] <- "Skin melanoma"
+names(merged_data3)[names(merged_data3)=="603"] <- "Extrapyramidal syndrome"
+names(merged_data3)[names(merged_data3)=="902"] <- "Cerebrovascular disease, ill-defined"
+names(merged_data3)[names(merged_data3)=="1202"] <- "Atopic dermatitis"
+names(merged_data3)[names(merged_data3)=="511"] <- "Intellectual disability"
+names(merged_data3)[names(merged_data3)=="513"] <- "Other developmental disorder"
+names(merged_data3)[names(merged_data3)=="907"] <- "Intra-abdominal arterial disease"
+names(merged_data3)[names(merged_data3)=="218"] <- "Hodgkin's disease"
+names(merged_data3)[names(merged_data3)=="912"] <- "Congenital cardiac and circulatory anomaly"
+names(merged_data3)[names(merged_data3)=="509"] <- "Other Functional Disorder"
+names(merged_data3)[names(merged_data3)=="508"] <- "Eating disorder"
+names(merged_data3)[names(merged_data3)=="207"] <- "Thyroid cancer"
+names(merged_data3)[names(merged_data3)=="222"] <- "Kaposi's Sarcoma"
+names(merged_data3)[names(merged_data3)=="215"] <- "Testicular cancer"
+names(merged_data3)[names(merged_data3)=="512"] <- "Autism Spectrum Disorder"
+
+write.csv(merged_data3, "C:/X\\data_CI", row.names=T)
+```
+
+
+To clean the environment and facilitate the computation
+```{r structure, include=FALSE}
+rm(dat_cont,dat_cont2, dat_mat, dat_mat2, dat_subset, dff, dff2, dff3, dff4, DBNdatatsv) 
+
+```
+
+
+# 2. Dynamic Bayesian network analysis 
+
+Once we have the cumulative incidence dataframe (merged_data3 or data_CI in this script), we start the DBN analysis. If you already have the times series (you can download it from here: https://github.com/IonasPi/DBN_Longitudinal-analysis-of-multimorbidity-patterns-applying-dynamic-Bayesian-network/blob/main/data_CI), you can start at this point. 
+
+
+We install the library "dbnR" and its dependencies. 
+```{r structure, include=FALSE}
+#install.packages("dbnR")
+#install.packages("bnlearn")
+library(dbnR)
+library(bnlearn)
+library(data.table)  
+
+```
+
+
+## 2.1 DMMHC algorithm
+
+Size = 2
+```{r structure, include=FALSE}
+## Size = number of time slices to unroll (markovian 1 would be size 2, markovian 2 size 3, ...)
+t <- proc.time()
+size = 2  
+dt_train <- data_CI[1:60,]
+netdmmhc2in <- dbnR::learn_dbn_struc(dt_train, size, method = "dmmhc", intra=T) 
+f_dt_train_dmmhc2_in <- fold_dt(dt_train, size)
+#fit_dmmhc2_in <- fit_dbn_params(netdmmhc2in, f_dt_train_dmmhc2_in, method = "mle-g")
+
+AICdmmhc2_in<-AIC(netdmmhc2in,f_dt_train_dmmhc2_in)
+BICdmmhc2_in<-BIC(netdmmhc2in,f_dt_train_dmmhc2_in) 
+LLdmmhc2_in<-logLik(netdmmhc2in,f_dt_train_dmmhc2_in)  
+
+t_dmmhc2_in<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_dmmhcin2.2<-arc.strength(netdmmhc2in,f_dt_train_dmmhc2_in, criterion="mi-g") 
+
+arcs_dmmhc2_in<- netdmmhc2in$arcs
+arcs_dmmhc2_in<-gsub("_t_.*","",arcs_dmmhc2_in)
+arcs_dmmhc2df_in<- as.data.frame(arcs_dmmhc2_in)
+```
+
+Size = 3 
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 3  
+dt_train <- data_CI[1:60,]
+netdmmhc3in <- dbnR::learn_dbn_struc(dt_train, size, method = "dmmhc", intra=T) 
+f_dt_train_dmmhc3_in <- fold_dt(dt_train, size)
+#fit_dmmhc3_in <- fit_dbn_params(netdmmhc3in, f_dt_train_dmmhc3_in, method = "mle-g")
+
+AICdmmhc3_in<-AIC(netdmmhc3in,f_dt_train_dmmhc3_in) 
+BICdmmhc3_in<-BIC(netdmmhc3in,f_dt_train_dmmhc3_in) 
+LLdmmhc3_in<-logLik(netdmmhc3in,f_dt_train_dmmhc3_in) 
+
+t_dmmhc3_in<- proc.time()-t  # 33.63 secs
+```
+
+Arc-strength 
+```{r structure, include=FALSE}
+arcst_dmmhcin3.2<-arc.strength(netdmmhc3in,f_dt_train_dmmhc3_in, criterion="mi-g") 
+
+arcs_dmmhc3_in<- netdmmhc3in$arcs
+arcs_dmmhc2_in<-gsub("_t_.*","",arcs_dmmhc3_in)
+arcs_dmmhc3df_in<- as.data.frame(arcs_dmmhc3_in)
+```
+
+
+Size = 4
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 4   
+dt_train <- data_CI[1:60,]
+netdmmhc4in <- dbnR::learn_dbn_struc(dt_train, size, method = "dmmhc", intra=T)
+f_dt_train_dmmhc4_in <- fold_dt(dt_train, size)
+#fit_dmmhc4_in <- fit_dbn_params(netdmmhc4in, f_dt_train_dmmhc4_in, method = "mle-g")
+
+AICdmmhc4_in<-AIC(netdmmhc4in,f_dt_train_dmmhc4_in) 
+BICdmmhc4_in<-BIC(netdmmhc4in,f_dt_train_dmmhc4_in) 
+LLdmmhc4_in<-logLik(netdmmhc4in,f_dt_train_dmmhc4_in) 
+
+t_dmmhc4_in<- proc.time()-t # 103 secs 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_dmmhcin4.2<-arc.strength(netdmmhc4in,f_dt_train_dmmhc4_in, criterion="mi-g") 
+
+arcs_dmmhc4_in<- netdmmhc4in$arcs
+arcs_dmmhc4_in<-gsub("_t_.*","",arcs_dmmhc4_in)
+arcs_dmmhc4df_in<- as.data.frame(arcs_dmmhc4_in)
+```
+
+Size = 5
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 5  
+dt_train <- data_CI[1:60,]
+netdmmhc5in <- dbnR::learn_dbn_struc(dt_train, size, method = "dmmhc", intra=T) 
+f_dt_train_dmmhc5_in <- fold_dt(dt_train, size)
+#fit_dmmhc5_in <- fit_dbn_params(netdmmhc5in, f_dt_train_dmmhc5_in, method = "mle-g")
+
+AICdmmhc5_in<-AIC(netdmmhc5in,f_dt_train_dmmhc5_in) 
+BICdmmhc5_in<-BIC(netdmmhc5in,f_dt_train_dmmhc5_in) 
+LLdmmhc5_in<-logLik(netdmmhc5in,f_dt_train_dmmhc5_in) 
+
+t_dmmhc5_in<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_dmmhcin5.2<-arc.strength(netdmmhc5in,f_dt_train_dmmhc5_in, criterion="mi-g") # 454/490 pvalue 0.05
+
+arcs_dmmhc5_in<- netdmmhc5in$arcs
+arcs_dmmhc5_in<-gsub("_t_.*","",arcs_dmmhc5_in)
+arcs_dmmhc5df_in<- as.data.frame(arcs_dmmhc5_in)
+```
+
+
+Size = 6
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 6  
+dt_train <- data_CI[1:60,]
+netdmmhc6in <- dbnR::learn_dbn_struc(dt_train, size, method = "dmmhc", intra=T) 
+f_dt_train_dmmhc6_in <- fold_dt(dt_train, size)
+#fit_dmmhc6_in <- fit_dbn_params(netdmmhc6in, f_dt_train_dmmhc6_in, method = "mle-g")
+
+AICdmmhc6_in<-AIC(netdmmhc6in,f_dt_train_dmmhc6_in) 
+BICdmmhc6_in<-BIC(netdmmhc6in,f_dt_train_dmmhc6_in) 
+LLdmmhc6_in<-logLik(netdmmhc6in,f_dt_train_dmmhc6_in) 
+ 
+t_dmmhc6_in<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_dmmhcin6.2<-arc.strength(netdmmhc6in,f_dt_train_dmmhc6_in, criterion="mi-g") 
+
+arcs_dmmhc6_in<- netdmmhc6in$arcs
+arcs_dmmhc6_in<-gsub("_t_.*","",arcs_dmmhc6_in)
+arcs_dmmhc6df_in<- as.data.frame(arcs_dmmhc6_in)
+```
+
+
+Size = 10
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 10  
+dt_train <- data_CI[1:60,]
+netdmmhc10in <- dbnR::learn_dbn_struc(dt_train, size, method = "dmmhc", intra=T) 
+f_dt_train_dmmhc10_in <- fold_dt(dt_train, size)
+#fit_dmmhc10_in <- fit_dbn_params(netdmmhc10in, f_dt_train_dmmhc10_in, method = "mle-g")
+
+AICdmmhc10_in<-AIC(netdmmhc10in,f_dt_train_dmmhc10_in) # 
+BICdmmhc10_in<-BIC(netdmmhc10in,f_dt_train_dmmhc10_in) # 
+LLdmmhc10_in<-logLik(netdmmhc10in,f_dt_train_dmmhc10_in) # 
+ 
+t_dmmhc10_in<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_dmmhcin10.2<-arc.strength(netdmmhc10in,f_dt_train_dmmhc10_in, criterion="mi-g") 
+
+arcs_dmmhc10_in<- netdmmhc10in$arcs
+arcs_dmmhc10_in<-gsub("_t_.*","",arcs_dmmhc10_in)
+arcs_dmmhc10df_in<- as.data.frame(arcs_dmmhc10_in)
+```
+
+
+
+Size = 15
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 15  
+dt_train <- data_CI[1:60,]
+netdmmhc15in <- dbnR::learn_dbn_struc(dt_train, size, method = "dmmhc", intra=T) 
+f_dt_train_dmmhc15_in <- fold_dt(dt_train, size)
+#fit_dmmhc15_in <- fit_dbn_params(netdmmhc15in, f_dt_train_dmmhc15_in, method = "mle-g")
+
+AICdmmhc15_in<-AIC(netdmmhc10in,f_dt_train_dmmhc15_in) 
+BICdmmhc15_in<-BIC(netdmmhc10in,f_dt_train_dmmhc15_in) 
+LLdmmhc15_in<-logLik(netdmmhc10in,f_dt_train_dmmhc15_in)  
+ 
+t_dmmhc15_in<- proc.time()-t # 16344 secs
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_dmmhcin15.2<-arc.strength(netdmmhc15in,f_dt_train_dmmhc15_in, criterion="mi-g") 
+
+arcs_dmmhc15_in<- netdmmhc15in$arcs
+arcs_dmmhc15_in<-gsub("_t_.*","",arcs_dmmhc15_in)
+arcs_dmmhc15df_in<- as.data.frame(arcs_dmmhc15_in)
+```
+
+Size = 20
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 20  
+dt_train <- data_CI[1:60,]
+netdmmhc20in <- dbnR::learn_dbn_struc(dt_train, size, method = "dmmhc", intra=T) 
+f_dt_train_dmmhc20_in <- fold_dt(dt_train, size)
+#fit_dmmhc20_in <- fit_dbn_params(netdmmhc20in, f_dt_train_dmmhc20_in, method = "mle-g")
+
+AICdmmhc20_in<-AIC(netdmmhc20in,f_dt_train_dmmhc20_in) 
+BICdmmhc20_in<-BIC(netdmmhc20in,f_dt_train_dmmhc20_in) 
+LLdmmhc20_in<-logLik(netdmmhc20in,f_dt_train_dmmhc20_in) 
+ 
+t_dmmhc20_in<- proc.time()-t # 51521 secs
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_dmmhcin20.2<-arc.strength(netdmmhc20in,f_dt_train_dmmhc20_in, criterion="mi-g") 
+
+arcs_dmmhc20_in<- netdmmhc20in$arcs
+arcs_dmmhc20_in<-gsub("_t_.*","",arcs_dmmhc20_in)
+arcs_dmmhc20df_in<- as.data.frame(arcs_dmmhc20_in)
+
+#install.packages("writexl")
+library(writexl)
+write_xlsx(arcst_dmmhcin20.2,"C:/Jonás/DBN\\arcst_dmmhcin20.2.xlsx") # we keep the model to perform the cluster analysis in Gephi. 
+write_xlsx(arcs_dmmhc20df_in,"C:/Jonás/DBN\\arcs_dmmhc20df_in.xlsx") # we keep the model to perform the cluster analysis in Gephi. 
+```
+
+
+## 2.2 PSOHO algorithm
+
+Size = 2
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 2 
+dt_train <- data_CI[1:60,]
+netpsoho2 <- dbnR::learn_dbn_struc(dt_train, size, method = "psoho") 
+f_dt_train_psoho2 <- fold_dt(dt_train, size)
+#fit_psoho2 <- fit_dbn_params(netpsoho2, f_dt_train_psoho2, method = "mle-g") 
+
+AICpsoho2<-AIC(netpsoho2,f_dt_train_psoho2) 
+BICpsoho2<-BIC(netpsoho2,f_dt_train_psoho2) 
+LLpsoho2<-logLik(netpsoho2,f_dt_train_psoho2) 
+
+t_psoho2<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_psoho2.2<-arc.strength(netpsoho2,f_dt_train_psoho2, criterion="mi-g") 
+
+arcs_psoho2<- netpsoho2$arcs
+arcs_psoho2<-gsub("_t_.*","",arcs_psoho2)
+arcs_psoho2df<- as.data.frame(arcs_psoho2)
+```
+
+Size = 3
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 3 
+dt_train <- data_CI[1:60,]
+netpsoho3 <- dbnR::learn_dbn_struc(dt_train, size, method = "psoho")
+f_dt_train_psoho3 <- fold_dt(dt_train, size)
+#fit_psoho3 <- fit_dbn_params(netpsoho3, f_dt_train_psoho3, method = "mle-g")
+
+AICpsoho3<-AIC(netpsoho3,f_dt_train_psoho3)
+BICpsoho3<-BIC(netpsoho3,f_dt_train_psoho3)
+LLpsoho3<-logLik(netpsoho3,f_dt_train_psoho3)
+
+t_psoho3<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+
+arcst_psoho3.2<-arc.strength(netpsoho3,f_dt_train_psoho3, criterion="mi-g")
+
+arcs_psoho3<- netpsoho3$arcs
+arcs_psoho3<-gsub("_t_.*","",arcs_psoho3)
+arcs_psoho3df<- as.data.frame(arcs_psoho3)
+```
+
+
+Size = 4
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 4 
+dt_train <- data_CI[1:60,]
+netpsoho4 <- dbnR::learn_dbn_struc(dt_train, size, method = "psoho")
+f_dt_train_psoho4 <- fold_dt(dt_train, size)
+#fit_psoho4 <- fit_dbn_params(netpsoho4, f_dt_train_psoho4, method = "mle-g")
+
+AICpsoho4<-AIC(netpsoho4,f_dt_train_psoho4)
+BICpsoho4<-BIC(netpsoho4,f_dt_train_psoho4)
+LLpsoho4<-logLik(netpsoho4,f_dt_train_psoho4)
+
+t_psoho4<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+
+arcst_psoho4.2<-arc.strength(netpsoho4,f_dt_train_psoho4, criterion="mi-g")
+
+arcs_psoho4<- netpsoho4$arcs
+arcs_psoho4<-gsub("_t_.*","",arcs_psoho4)
+arcs_psoho4df<- as.data.frame(arcs_psoho4)
+```
+
+Size = 5
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 5 
+dt_train <- data_CI[1:60,]
+netpsoho5 <- dbnR::learn_dbn_struc(dt_train, size, method = "psoho") 
+f_dt_train_psoho5 <- fold_dt(dt_train, size)
+#fit_psoho5 <- fit_dbn_params(netpsoho5, f_dt_train_psoho5, method = "mle-g")
+
+AICpsoho5<-AIC(netpsoho5,f_dt_train_psoho5) 
+BICpsoho5<-BIC(netpsoho5,f_dt_train_psoho5) 
+LLpsoho5<-logLik(netpsoho5,f_dt_train_psoho5) 
+
+t_psoho5<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_psoho5.2<-arc.strength(netpsoho5,f_dt_train_psoho5, criterion="mi-g") 
+
+arcs_psoho5<- netpsoho5$arcs
+arcs_psoho5<-gsub("_t_.*","",arcs_psoho5)
+arcs_psoho5df<- as.data.frame(arcs_psoho5)
+```
+
+
+Size = 6
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 6 
+dt_train <- data_CI[1:60,]
+netpsoho6 <- dbnR::learn_dbn_struc(dt_train, size, method = "psoho")
+f_dt_train_psoho6 <- fold_dt(dt_train, size)
+#fit_psoho6 <- fit_dbn_params(netpsoho6, f_dt_train_psoho6, method = "mle-g")
+
+AICpsoho6<-AIC(netpsoho6,f_dt_train_psoho6) 
+BICpsoho6<-BIC(netpsoho6,f_dt_train_psoho6) 
+LLpsoho6<-logLik(netpsoho6,f_dt_train_psoho6)
+
+t_psoho6<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+
+arcst_psoho6.2<-arc.strength(netpsoho6,f_dt_train_psoho6, criterion="mi-g") 
+
+arcs_psoho6<- netpsoho6$arcs
+arcs_psoho6<-gsub("_t_.*","",arcs_psoho6)
+arcs_psoho6df<- as.data.frame(arcs_psoho6)
+
+```
+
+Size = 10
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 10 
+dt_train <- data_CI[1:60,]
+netpsoho10 <- dbnR::learn_dbn_struc(dt_train, size, method = "psoho") 
+f_dt_train_psoho10 <- fold_dt(dt_train, size)
+#fit_psoho10 <- fit_dbn_params(netpsoho10, f_dt_train_psoho6, method = "mle-g")
+
+
+AICpsoho10<-AIC(netpsoho10,f_dt_train_psoho10)
+BICpsoho10<-BIC(netpsoho10,f_dt_train_psoho10)
+LLpsoho10<-logLik(netpsoho10,f_dt_train_psoho10)
+
+t_psoho10<- proc.time()-t 
+
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_psoho10.2<-arc.strength(netpsoho10,f_dt_train_psoho10, criterion="mi-g")
+
+arcs_psoho10<- netpsoho10$arcs
+arcs_psoho10<-gsub("_t_.*","",arcs_psoho10)
+arcs_psoho10df<- as.data.frame(arcs_psoho10)
+```
+
+## 2.3 natPSOHO algorithm
+
+Size = 2
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 2 
+dt_train <- data_CI[1:60,]
+netnatpsoho2 <- dbnR::learn_dbn_struc(dt_train, size, method = "natPsoho")
+f_dt_train_natpsoho2 <- fold_dt(dt_train, size)
+#fit_natpsoho2 <- fit_dbn_params(netnatpsoho2, f_dt_train_natpsoho2, method = "mle-g")
+
+AICnatpsoho2<-AIC(netnatpsoho2,f_dt_train_natpsoho2)
+BICnatpsoho2<-BIC(netnatpsoho2,f_dt_train_natpsoho2)
+LLnatpsoho2<-logLik(netnatpsoho2,f_dt_train_natpsoho2)
+
+t_natpsoho2<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_natpsoho2.2<-arc.strength(netnatpsoho2,f_dt_train_natpsoho2, criterion="mi-g")
+
+arcs_natpsoho2<- netnatpsoho2$arcs
+arcs_natpsoho2<-gsub("_t_.*","",arcs_natpsoho2)
+arcs_natpsoho2df<- as.data.frame(arcs_natpsoho2)
+```
+
+Size = 3
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 3 
+dt_train <- data_CI[1:60,]
+netnatpsoho3 <- dbnR::learn_dbn_struc(dt_train, size, method = "natPsoho")
+f_dt_train_natpsoho3 <- fold_dt(dt_train, size)
+fit_natpsoho3 <- fit_dbn_params(netnatpsoho3, f_dt_train_natpsoho3, method = "mle-g")
+
+AICnatpsoho3<-AIC(netnatpsoho3,f_dt_train_natpsoho3)
+BICnatpsoho3<-BIC(netnatpsoho3,f_dt_train_natpsoho3)
+LLnatpsoho3<-logLik(netnatpsoho3,f_dt_train_natpsoho3)
+
+t_natpsoho3<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_natpsoho3.2<-arc.strength(netnatpsoho3,f_dt_train_natpsoho3, criterion="mi-g")
+
+arcs_natpsoho3<- netnatpsoho3$arcs
+arcs_natpsoho3<-gsub("_t_.*","",arcs_natpsoho3)
+arcs_natpsoho3df<- as.data.frame(arcs_natpsoho3)
+```
+
+
+Size = 4
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 4 
+dt_train <- data_CI[1:60,]
+netnatpsoho4 <- dbnR::learn_dbn_struc(dt_train, size, method = "natPsoho")
+f_dt_train_natpsoho4 <- fold_dt(dt_train, size)
+fit_natpsoho4 <- fit_dbn_params(netnatpsoho4, f_dt_train_natpsoho4, method = "mle-g")
+
+AICnatpsoho4<-AIC(netnatpsoho4,f_dt_train_natpsoho4)
+BICnatpsoho4<-BIC(netnatpsoho4,f_dt_train_natpsoho4)
+LLnatpsoho4<-logLik(netnatpsoho4,f_dt_train_natpsoho4)
+
+t_natpsoho4<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_natpsoho4.2<-arc.strength(netnatpsoho4,f_dt_train_natpsoho4, criterion="mi-g")
+
+arcs_natpsoho4<- netnatpsoho4$arcs
+arcs_natpsoho4<-gsub("_t_.*","",arcs_natpsoho4)
+arcs_natpsoho4df<- as.data.frame(arcs_natpsoho4)
+```
+
+
+Size = 5
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 5 
+dt_train <- data_CI[1:60,]
+netnatpsoho5 <- dbnR::learn_dbn_struc(dt_train, size, method = "natPsoho")
+f_dt_train_natpsoho5 <- fold_dt(dt_train, size)
+fit_natpsoho5 <- fit_dbn_params(netnatpsoho5, f_dt_train_natpsoho5, method = "mle-g")
+
+AICnatpsoho5<-AIC(netnatpsoho5,f_dt_train_natpsoho5)
+BICnatpsoho5<-BIC(netnatpsoho5,f_dt_train_natpsoho5)
+LLnatpsoho5<-logLik(netnatpsoho5,f_dt_train_natpsoho5)
+
+t_natpsoho5<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_natpsoho5.2<-arc.strength(netnatpsoho5,f_dt_train_natpsoho5, criterion="mi-g")
+
+arcs_natpsoho5<- netnatpsoho5$arcs
+arcs_natpsoho5<-gsub("_t_.*","",arcs_natpsoho5)
+arcs_natpsoho5df<- as.data.frame(arcs_natpsoho5)
+```
+
+Size = 6
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 6  
+dt_train <- data_CI[1:60,]
+netnatpsoho6in <- dbnR::learn_dbn_struc(dt_train, size, method = "natPsoho")
+f_dt_train_natpsoho6_in <- fold_dt(dt_train, size)
+
+#fit_natpsoho6_in <- fit_dbn_params(netnatpsoho6in, f_dt_train_natpsoho6_in, method = "mle-g")
+
+AICnatpsoho6_in<-AIC(netnatpsoho6in,f_dt_train_natpsoho6_in)
+BICnatpsoho6_in<-BIC(netnatpsoho6in,f_dt_train_natpsoho6_in)
+LLnatpsoho6_in<-logLik(netnatpsoho6in,f_dt_train_natpsoho6_in)
+
+t_natpsoho6_in<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_natpsoho6.2<-arc.strength(netnatpsoho6in,f_dt_train_natpsoho6_in, criterion="mi-g")
+
+arcs_natpsoho6_in<- netnatpsoho6in$arcs
+arcs_natpsoho6_in<-gsub("_t_.*","",arcs_natpsoho6_in)
+arcs_natpsoho6df_in<- as.data.frame(arcs_natpsoho6_in)
+```
+
+Size = 10
+```{r structure, include=FALSE}
+t <- proc.time()
+size = 10 
+dt_train <- data_CI[1:60,]
+netnatpsoho10 <- dbnR::learn_dbn_struc(dt_train, size, method = "natPsoho")
+f_dt_train_natpsoho10 <- fold_dt(dt_train, size)
+#fit_natpsoho10 <- fit_dbn_params(netnatpsoho10, f_dt_train_natpsoho10, method = "mle-g")
+
+AICnatpsoho10<-AIC(netnatpsoho10,f_dt_train_natpsoho10)
+BICnatpsoho10<-BIC(netnatpsoho10,f_dt_train_natpsoho10)
+LLnatpsoho10<-logLik(netnatpsoho10,f_dt_train_natpsoho10)
+
+t_natpsoho10<- proc.time()-t 
+```
+
+Arc-strength
+```{r structure, include=FALSE}
+arcst_natpsoho10.2<-arc.strength(netnatpsoho10,f_dt_train_natpsoho10, criterion="mi-g")
+
+arcs_natpsoho10<- netnatpsoho10$arcs
+arcs_natpsoho10<-gsub("_t_.*","",arcs_natpsoho10)
+arcs_natpsoho10df<- as.data.frame(arcs_natpsoho10)
+```
+
+
+# References
+
+1. Muñoyerro-Muñiz D, Goicoechea-Salazar JA, Garcia-Leon FJ, Laguna-Tellez A, Larrocha-Mata D, Cardero-Rivas M. Conexion de registros sanitarios: base poblacional de salud de Andalucia [Health record linkage: Andalusian health population database]. Gac Sanit. 2020 Mar-Apr;34(2):105-113. Spanish. doi: 10.1016/j.gaceta.2019.03.003. Epub 2019 May 25. PMID: 31133300.
+2. Prados-Torres A, Calderon-Larrañaga A, Hancco-Saavedra J, Poblador-Plou B, van den Akker M. Multimorbidity patterns: a systematic review. J Clin Epidemiol. 2014 Mar;67(3):254-66. doi: 10.1016/j.jclinepi.2013.09.021. PMID: 24472295.
+3. Fortin M, Dubois MF, Hudon C, Soubhi H, Almirall J. Multimorbidity and quality of life: a closer look. Health Qual Life Outcomes. 2007 Aug 6;5:52. doi: 10.1186/1477-7525-5-52. PMID: 17683600; PMCID: PMC2042974.
+4. Pathirana TI, Jackson CA. Socioeconomic status and multimorbidity: a systematic review and meta-analysis. Aust N Z J Public Health. 2018 Apr;42(2):186-194. doi: 10.1111/1753-6405.12762. Epub 2018 Feb 14. PMID: 29442409.
+5. Barnett K, Mercer SW, Norbury M, Watt G, Wyke S, Guthrie B. Epidemiology of multimorbidity and implications for health care, research, and medical education: a cross-sectional study. Lancet. 2012 Jul 7;380(9836):37-43. doi: 10.1016/S0140-6736(12)60240-2. Epub 2012 May 10. PMID: 22579043.
+6. Carmona-Pirez J, Poblador-Plou B, Poncel-Falco A, Rochat J, Alvarez-Romero C, Martinez-Garcia A, Angioletti C, Almada M, Gencturk M, Sinaci AA, Ternero-Vega JE, Gaudet-Blavignac C, Lovis C, Liperoti R, Costa E, Parra-Calderon CL, Moreno-Juste A, Gimeno-Miguel A, Prados-Torres A. Applying the FAIR4Health Solution to Identify Multimorbidity Patterns and Their Association with Mortality through a Frequent Pattern Growth Association Algorithm. Int J Environ Res Public Health. 2022 Feb 11;19(4):2040. doi: 10.3390/ijerph19042040. PMID: 35206230; PMCID: PMC8872292.
+7. Jensen AB, Moseley PL, Oprea TI, Ellesøe SG, Eriksson R, Schmock H, Jensen PB, Jensen LJ, Brunak S. Temporal disease trajectories condensed from population-wide registry data covering 6.2 million patients. Nat Commun. 2014 Jun 24;5:4022. doi: 10.1038/ncomms5022. PMID: 24959948; PMCID: PMC4090719.
+8. Kudesia P, Salimarouny B, Stanley M, Fortin M, Stewart M, Terry A, Ryan BL. The incidence of multimorbidity and patterns in accumulation of chronic conditions: A systematic review. J Multimorb Comorb. 2021 Jul 15;11:26335565211032880. doi: 10.1177/26335565211032880. PMID: 34350127; PMCID: PMC8287424.
+9. Quesada D. DBNR package for R software.
+https://cran.r-project.org/web/packages/dbnR/dbnR.pdf
+10. Joachim Bocker. 2021/04. Measures_v2.csv, version 2. Available online: https://www.kaggle.com/datasets/wkirgsn/electric-motor-temperature
+11. Trabelsi, G., Leray, P., Ben Ayed, M., Alimi, A.M. (2013). Dynamic MMHC: A Local Search Algorithm for Dynamic Bayesian Network Structure Learning. In: Tucker, A., Hoppner, F., Siebes, A., Swift, S. (eds) Advances in Intelligent Data Analysis XII. IDA 2013. Lecture Notes in Computer Science, vol 8207. Springer, Berlin, Heidelberg. https://doi.org/10.1007/978-3-642-41398-8_34
+12. F. P. Santos and C. Dias Maciel, "A PSO approach for learning transition structures of Higher-Order Dynamic Bayesian Networks," 5th ISSNIP-IEEE Biosignals and Biorobotics Conference (2014): Biosignals and Robotics for Better and Safer Living (BRC), 2014, pp. 1-6, doi: 10.1109/BRC.2014.6880957.
+13. David Quesada, Concha Bielza, and Pedro Larrañaga. 2021. Structure Learning of High-Order Dynamic Bayesian Networks via Particle Swarm Optimization with Order Invariant Encoding. In Hybrid Artificial Intelligent Systems: 16th International Conference, HAIS 2021, Bilbao, Spain, September 22–24, 2021, Proceedings. Springer-Verlag, Berlin, Heidelberg, 158–171. https://doi.org/10.1007/978-3-030-86271-8_14
+14. R Core Team (2020). R: A language and environment for statistical computing. R Foundation for Statistical Computing, Vienna, Austria. URL https://www.R-project.org/
+15. Lancichinetti A, Fortunato S. Community detection algorithms: a comparative analysis. Phys Rev E Stat Nonlin Soft Matter Phys. 2009 Nov;80(5 Pt 2):056117. doi: 10.1103/PhysRevE.80.056117. Epub 2009 Nov 30. Erratum in: Phys Rev E Stat Nonlin Soft Matter Phys. 2014 Apr;89(4):049902. PMID: 20365053.
+16. Divo MJ, Casanova C, Marin JM, Pinto-Plata VM, de-Torres JP, Zulueta JJ, Cabrera C, Zagaceta J, Sanchez-Salcedo P, Berto J, Davila RB, Alcaide AB, Cote C, Celli BR; BODE Collaborative Group. COPD comorbidities network. Eur Respir J. 2015 Sep;46(3):640-50. doi: 10.1183/09031936.00171614. Epub 2015 Jul 9. PMID: 26160874.
+17. Carmona-Pirez J, Poblador-Plou B, Diez-Manglano J, Morillo-Jimenez MJ, Marin Trigo JM, Ioakeim-Skoufa we, Gimeno-Miguel A, Prados-Torres A. Multimorbidity networks of chronic obstructive pulmonary disease and heart failure in men and women: Evidence from the EpiChron Cohort. Mech Ageing Dev. 2021 Jan;193:111392. doi: 10.1016/j.mad.2020.111392. Epub 2020 Oct 29. PMID: 33129797.
+18. Carmona-Pirez J, Gimeno-Miguel A, Bliek-Bueno K, Poblador-Plou B, Diez-Manglano J, Ioakeim-Skoufa we, Gonzalez-Rubio F, Poncel-Falco A, Prados-Torres A, Gimeno-Feliu LA; PRECOVID Group. Identifying multimorbidity profiles associated with COVID-19 severity in chronic patients using network analysis in the PRECOVID Study. Sci Rep. 2022 Feb 18;12(1):2831. doi: 10.1038/s41598-022-06838-9. PMID: 35181720; PMCID: PMC8857317.
+19. Almenara-Blasco M, Carmona-Pirez J, Gracia-Cazaña T, Poblador-Plou B, Perez-Gilaberte JB, Navarro-Bielsa A, Gimeno-Miguel A, Prados-Torres A, Gilaberte Y. Comorbidity Patterns in Patients with Atopic Dermatitis Using Network Analysis in the EpiChron Study. J Clin Med. 2022 Oct 29;11(21):6413. doi: 10.3390/jcm11216413. PMID: 36362643; PMCID: PMC9658108.
+20. Andres Mañas MA. Clustering en redes bayesianas. Implementacion en R. TFM (Master en Matematicas) 2017, Universidad de Almeria. Disponible en: http://repositorio.uales/handle/10835/5909 (acceso el 24/03/2021).
+21. Comai G. Ganttrify package for R software
+https://github.com/giocomai/ganttrify
+22. Busija L, Lim K, Szoeke C, Sanders KM, McCabe MP. Do replicable profiles of multimorbidity exist? Systematic review and synthesis. Eur J Epidemiol. 2019 Nov;34(11):1025-1053. doi: 10.1007/s10654-019-00568-5. Epub 2019 Oct 17. PMID: 31624969.
+23. Cezard G, McHale CT, Sullivan F, Bowles JKF, Keenan K. Studying trajectories of multimorbidity: a systematic scoping review of longitudinal approaches and evidence. BMJ Open. 2021 Nov 22;11(11):e048485. doi: 10.1136/bmjopen-2020-048485. PMID: 34810182; PMCID: PMC8609933.
+24. Aguado A, Moratalla-Navarro F, Lopez-Simarro F, Moreno V. MorbiNet: multimorbidity networks in adult general population. Analysis of type 2 diabetes mellitus comorbidity. Sci Rep. 2020 Feb 12;10(1):2416. doi: 10.1038/s41598-020-59336-1. PMID: 32051506; PMCID: PMC7016191.
+25. Moratalla-Navarro F, Moreno V, Lopez-Simarro F, Aguado A. MorbiNet Study: Hypothyroidism Comorbidity Networks in the Adult General Population. J ClinEndocrinol Metab. 2021 Mar 8;106(3):e1179-e1190. doi: 10.1210/clinem/dgaa927. PMID: 33319230.
+26. Moratalla-Navarro F, Moreno V, Lopez-Simarro F, Barcelo ME, Aguado A. Multimorbidity and chronic co-prescription networks and potential interactions in adult patients with epilepsy: MorbiNet study. Neurol Sci. 2022 Dec;43(12):6889-6899. doi: 10.1007/s10072-022-06375-3. Epub 2022 Sep 5. PMID: 36063254.
+27. Beck MK, Jensen AB, Nielsen AB, Perner A, Moseley PL, Brunak S. Diagnosis trajectories of prior multi-morbidity predict sepsis mortality. Sci Rep. 2016 Nov 4;6:36624. doi: 10.1038/srep36624. PMID: 27812043; PMCID: PMC5095673.
+28. Siggaard T, Reguant R, Jørgensen IF, Haue AD, Lademann M, Aguayo-Orozco A, Hjaltelin JX, Jensen AB, Banasik K, Brunak S. Disease trajectory browser for exploring temporal, population-wide disease progression patterns in 7.2 million Danish patients. Nat Commun. 2020 Oct 2;11(1):4952. doi: 10.1038/s41467-020-18682-4. PMID: 33009368; PMCID: PMC7532164.
+29. Vetrano DL, Roso-Llorach A, Fernandez S, Guisado-Clavero M, Violan C, Onder G, Fratiglioni L, Calderon-Larrañaga A, Marengoni A. Twelve-year clinical trajectories of multimorbidity in a population of older adults. Nat Commun. 2020 Jun 26;11(1):3223. doi: 10.1038/s41467-020-16780-x. PMID: 32591506; PMCID: PMC7320143.
+30. Deparis S, Pascale A, Tommasi P, Kotoulas S. An Analytical Method for Multimorbidity Management Using Bayesian Networks. Stud Health Technol Inform. 2018;247:820-824. PMID: 29678075.
+31. Lappenschaar M, Hommersom A, Lucas PJ, Lagro J, Visscher S, Korevaar JC, Schellevis FG. Multilevel temporal Bayesian networks can model longitudinal change in multimorbidity. J Clin Epidemiol. 2013 Dec;66(12):1405-16. doi: 10.1016/j.jclinepi.2013.06.018. Epub 2013 Sep 12. PMID: 24035172.
+32. Violan C, Fernandez-Bertolin S, Guisado-Clavero M, Foguet-Boreu Q, Valderas JM, Vidal Manzano J, Roso-Llorach A, Cabrera-Bean M. Five-year trajectories of multimorbidity patterns in an elderly Mediterranean population using Hidden Markov Models. Sci Rep. 2020 Oct 9;10(1):16879. doi: 10.1038/s41598-020-73231-9. PMID: 33037233; PMCID: PMC7547668.
+33. Mesgarpour, M., Chaussalet, T. & Chahed, S. A review of Dynamic Bayesian Network techniques with applications in healthcare risk modelling. In 4th Student Conf. Oper. Res. Vol. 37, 89–100 (2014)
+34. Bueno MLP, Hommersom A, Lucas PJF, Lobo M, R. P. Scalable Uncertainty Management Vol. 7520 (Springer, Berlin, 2012).
+35. Marx, P. & Antal, P. Decomposition of shared latent factors using bayesian multi-morbidity dependency maps. In 40–43 (2015). https://doi.org/10.1007/978-981-287-573-0_10
+36. Romero Moreno G., Restocchi V., Fleuriot JD. Building co-morbidity networks via Bayesian network reconstruction. Proceedings of the The 11th International Conference on Complex Networks and their Applications
+37. Elixhauser A., Steiner C., Palmer L. Clinical Classifications Software (CCS) [(accessed on 25 November 2022)];2009. Available online: http://www.hcup-us.ahrq.gov/toolssoftware/ccs/ccs.jsp
+38. Chronic Condition Indicator (CCI) for ICD-9-CM. [(accessed on 25 October 2021)]; Available online: https://www.hcup-us.ahrq.gov/toolssoftware/chronic/chronic.jsp
+39. Tsamardinos, we., Brown, L.E., Constantin, F., Aliferis, C.F.: The max-min hill-climbing bayesian network structure learning algorithm. Mach. Learn. 65(1), 31–78 (2006)
+40. Quesada D, Bielza C, Fontan P, Larrañaga P. Piecewise forecasting of nonlinear time series with model tree dynamic Bayesian networks. InternationalJournal of Intelligent Systems. 2022 Jul 24; 37(11):9108-9137. doi: 10.1002/int.22982
+41. Quesada D, Valverde G, Larrañaga P, Bielza C. Long-term forecasting of multivariate time series in industrial furnaces with dynamic Gaussian Bayesian networks. Engineering Applications of Artificial Intelligence. 2021 Aug; 103: 104301. https://doi.org/10.1016/j.engappai.2021.104301
+42. Scutari M, Silander T, Ness R. Bnlearn package for R software: https://www.bnlearn.com/documentation/bnlearn-manualpdf
+43. Nasini S. Notes on Bayesian Networks [(accessed on 25 November 2022)]. Available online: https://www-eio.upc.es/~nasini/Blog/BayesianNetworks
+44. Hannen S. Performance evaluation of community detection algorithms in multivariate clustered binary. Bachelor Thesis. Eindhoven University of Technology. 2022 Jul.
+45. Carmona-Pirez J, Ioakeim-Skoufa we, Gimeno-Miguel A, Poblador-Plou B, Gonzalez-Rubio F, Muñoyerro-Muñiz D, Rodriguez-Herrera J, Goicoechea-Salazar JA, Prados-Torres A, Villegas-Portero R. Multimorbidity Profiles and Infection Severity in COVID-19 Population Using Network Analysis in the Andalusian Health Population Database. Int J Environ Res Public Health. 2022 Mar 23;19(7):3808. doi: 10.3390/ijerph19073808. PMID: 35409489; PMCID: PMC8997853.
+46. Blondel VD, Guillaume J-L, Lambiotte R, Lefebvre E. Fast unfolding of communities in large networks. J. Stat. Mech. Theory Exp. 2008;2008:P10008. doi: 10.1088/1742-5468/2008/10/P10008.
+47. Traag VA, Waltman L, van Eck NJ. From Louvain to Leiden: guaranteeing well-connected communities. Sci Rep. 2019 Mar 26;9(1):5233. doi: 10.1038/s41598-019-41695-z. PMID: 30914743; PMCID: PMC6435756.
+48. Newman ME. Modularity and community structure in networks. Proc Natl Acad Sci U S A. 2006 Jun 6;103(23):8577-82. doi: 10.1073/pnas.0601602103. Epub 2006 May 24. PMID: 16723398; PMCID: PMC1482622.
+49. Bastian M., Heymann S., Jacomy M. (2009). Gephi: an open source software for exploring and manipulating networks. International AAAI Conference on Weblogs and Social Media.
+50. Hagberg AA, Schult DA, Swart PJ. Exploring network structure, dynamics, and function using NetworkX. Proceedings of the 7th Python in Science Conference (SciPy2008), Gael Varoquaux, Travis Vaught, and Jarrod Millman (Eds), (Pasadena, CA USA). 2008 Aug: 11-15.
+51. St Luce S, Sayama H. Analysis and Visualization of High-Dimensional Dynamical Systems’ Phase Space Using a Network-Based Approach. Complexity. 2022 Jun;2022: 1-11
+52. Pan Y, Cai W, Cheng Q, Dong W, An T, Yan J. Association between anxiety and hypertension: a systematic review and meta-analysis of epidemiological studies. Neuropsychiatr Dis Treat. 2015 Apr 22;11:1121-30. doi: 10.2147/NDT.S77710. PMID: 25960656; PMCID: PMC4411016.
+53. Henao-Perez M, Lopez-Medina DC, Arboleda A, Bedoya Monsalve S, Zea JA. Patients With Fibromyalgia, Depression, and/or Anxiety and Sex Differences. Am J Mens Health. 2022 Jul-Aug;16(4):15579883221110351. doi: 10.1177/15579883221110351. PMID: 35818673; PMCID: PMC9280828.
+54. Galvez-Sanchez CM, Duschek S, Reyes Del Paso GA. Psychological impact of fibromyalgia: current perspectives. Psychol Res Behav Manag. 2019 Feb 13;12:117-127. doi: 10.2147/PRBM.S178240. PMID: 30858740; PMCID: PMC6386210.
+55. Moylan S, Jacka FN, Pasco JA, Berk M. Cigarette smoking, nicotine dependence and anxiety disorders: a systematic review of population-based, epidemiological studies. BMC Med. 2012 Oct 19;10:123. doi: 10.1186/1741-7015-10-123. PMID: 23083451; PMCID: PMC3523047.
+56. Slagter SN, van Vliet-Ostaptchouk JV, Vonk JM, Boezen HM, Dullaart RP, Kobold AC, Feskens EJ, van Beek AP, van der Klauw MM, Wolffenbuttel BH. Combined effects of smoking and alcohol on metabolic syndrome: the LifeLines cohort study. PLoS One. 2014 Apr 29;9(4):e96406. doi: 10.1371/journalpone.0096406. Erratum in: PLoS One. 2014;9(8):e105157. Boezen, H Marieke [corrected to Boezen, H Marike]. PMID: 24781037; PMCID: PMC4004580.
+57. Wang ST, Ni GX. Depression in Osteoarthritis: Current Understanding. Neuropsychiatr Dis Treat. 2022 Feb 22;18:375-389. doi: 10.2147/NDT.S346183. PMID: 35237034; PMCID: PMC8883119.
+58. Luppino FS, de Wit LM, Bouvy PF, Stijnen T, Cuijpers P, Penninx BW, Zitman FG. Overweight, obesity, and depression: a systematic review and meta-analysis of longitudinal studies. Arch Gen Psychiatry. 2010 Mar;67(3):220-9. doi: 10.1001/archgenpsychiatry.2010.2. PMID: 20194822.
+59. Tagoe CE, Zezon A, Khattri S. Rheumatic manifestations of autoimmune thyroid disease: the other autoimmune disease. J Rheumatol. 2012 Jun;39(6):1125-9. doi: 10.3899/jrheum.120022. Epub 2012 Apr 15. PMID: 22505695.
+60. Santos-Moreno P, Bello J, Cubides M, Amador L, Zambrano D, Villareal L, Urbina A. AB1000 Rheumathoid arthritis misdiagnosis and osteoarthritis as the most frequent cause for diagnosis mistake. Annals of the Rheumatic Diseases 2013;71:695.
+61. Saalfeld W, Mixon AM, Zelie J, Lydon EJ. Differentiating Psoriatic Arthritis from Osteoarthritis and Rheumatoid Arthritis: A Narrative Review and Guide for Advanced Practice Providers. Rheumatol Ther. 2021 Dec;8(4):1493-1517. doi: 10.1007/s40744-021-00365-1. Epub 2021 Sep 14. PMID: 34519965; PMCID: PMC8572231.
+62. Yumnam D, Kansal NK, Kant R. Association of Psoriasis With Thyroid Disorders: A Hospital-Based, Cross-Sectional Study. Cureus. 2022 Mar 9;14(3):e22987. doi: 10.7759/cureus.22987. PMID: 35415048; PMCID: PMC8991584.
+63. Svanstrom C, Lonne-Rahm SB, Nordlind K. Psoriasis and alcohol. Psoriasis (Auckl). 2019 Aug 21;9:75-79. doi: 10.2147/PTT.S164104. PMID: 31687362; PMCID: PMC6709030.
+64. Carmona-Pirez J, Poblador-Plou B, Ioakeim-Skoufa we, Gonzalez-Rubio F, Gimeno-Feliu LA, Diez-Manglano J, Laguna-Berna C, Marin JM, Gimeno-Miguel A, Prados-Torres A. Multimorbidity clusters in patients with chronic obstructive airway diseases in the EpiChron Cohort. Sci Rep. 2021 Feb 26;11(1):4784. doi: 10.1038/s41598-021-83964-w. PMID: 33637795; PMCID: PMC7910602.
+65. O'Leary K. HIV and skin cancer risk. Nat Med. 2022 Jan 6. doi: 10.1038/d41591-022-00001-7. Epub ahead of print. PMID: 34992301.
+66. Calle Rubio M, Rodriguez Hermosa JL, Miravitlles M, Lopez-Campos JL. Determinants in the Underdiagnosis of COPD in Spain-CONOCEPOC Study. J Clin Med. 2022 May 9;11(9):2670. doi: 10.3390/jcm11092670. PMID: 35566796; PMCID: PMC9105961.
+67. Wang JC, Chien WC, Chung CH, Liao WI, Tsao CH, Wu YF, Tsai SH. Increased risk of malignancy in patients with an aortic aneurysm: a nationwide population-based retrospective study. Oncotarget. 2017 Aug 11;9(2):2829-2837. doi: 10.18632/oncotarget.20181. PMID: 29416815; PMCID: PMC5788683.
+68. Kim H, Cho SI, Won S, Han Y, Kwon TW, Cho YP, Kim H. The Prevalence of Concomitant Abdominal Aortic Aneurysm and Cancer. J Clin Med. 2021 Aug 27;10(17):3847. doi: 10.3390/jcm10173847. PMID: 34501300; PMCID: PMC8432173.
+69. Kellen E, Zeegers MP, Dirx M, Houterman S, Droste J, Lawrence G, Truyers C, Bruckers L, Molenberghs G, Joniau S, Buntinx F. Occurrence of both bladder and prostate cancer in five cancer registries in Belgium, The Netherlands and the United Kingdom. Eur J Cancer. 2007 Jul;43(11):1694-700. doi: 10.1016/j.ejca.2007.04.011. Epub 2007 May 24. PMID: 17531466.
+70. Di Sebastiano KM, Mourtzakis M. The role of dietary fat throughout the prostate cancer trajectory. Nutrients. 2014 Dec 22;6(12):6095-109. doi: 10.3390/nu6126095. PMID: 25533015; PMCID: PMC4277017.
+71. Islami F, Moreira DM, Boffetta P, Freedland SJ. A systematic review and meta-analysis of tobacco use and prostate cancer mortality and incidence in prospective cohort studies. Eur Urol. 2014 Dec;66(6):1054-64. doi: 10.1016/j.eururo.2014.08.059. Epub 2014 Sep 18. PMID: 25242554; PMCID: PMC4566150.
+72. Kinoshita Y, Singh A, Rovito PM Jr, Wang CY, Haas GP. Double primary cancers of the prostate and bladder: a literature review. Clin Prostate Cancer. 2004 Sep;3(2):83-6. doi: 10.3816/cgc.2004.n.016. PMID: 15479490.
+73. Quesada D. Github, DbnR package [(accessed on 28 December 2022)]. Available online: https://github.com/dkesada/dbnR/issues/21 74. Peixoto TP. Descriptive vs. inferential community detection in networks: pitfalls, myths and half-truths. Preprint: arXiv:2112.00183v6 [physics.soc-ph] 26 Sep 2022 [(accessed on 15 December 2022)]. Available online: https://arxiv.org/pdf/2112.00183.pdf
+75. Restocchi, V, Villegas, JG & Fleuriot, JD 2022, Multimorbidity profiles and stochastic block modeling improve ICU patient clustering. in M Fazio, DK Panda, R Prodan, V Cardellini, B Kantarci, O Rana & M Villari (eds), Proceedings of the 22nd IEEE/ACM International Symposium on Cluster, Cloud and Internet Computing, CCGrid 2022. Institute of Electrical and Electronics Engineers (IEEE), pp. 925-932, 22nd IEEE/ACM International Symposium on Cluster, Cloud and Internet Computing, CCGrid 2022, Taormina, Italy, 16/05/22. https://doi.org/10.1109/CCGrid54584.2022.00112
+76. Strayer N. SBMR Package for R software. http://nickstrayer.me/sbmr/index.html
